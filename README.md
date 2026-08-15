@@ -36,4 +36,6 @@ architect, inspector, context compiler, and evidence gate.
 
 ## License
 
-License decision pending. Do not publish or redistribute as an open-source release until a license is explicitly selected.
+Evidline is licensed under the MIT License.
+Copyright (c) 2026 Tenzy Lama.
+See LICENSE for the full terms.

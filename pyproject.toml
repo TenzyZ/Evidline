@@ -8,6 +8,8 @@ version = "0.0.0"
 description = "Local-first verified context and mutation boundary for AI coding agents."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = []
 
 [project.scripts]
