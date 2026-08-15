@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "evidline"
+version = "0.0.0"
+description = "Local-first verified context and mutation boundary for AI coding agents."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+evidline = "evidline.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/evidline"]
