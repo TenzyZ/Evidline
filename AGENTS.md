@@ -62,6 +62,8 @@ release currently exists.
 * Local state directory: `.evidline/`
 * Python: `>=3.11`
 * Runtime dependencies: zero
+* License: MIT
+* Copyright holder: Tenzy Lama
 
 ## V1 target
 
