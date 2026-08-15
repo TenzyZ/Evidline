@@ -678,6 +678,12 @@ def _validate_claim(item: Claim, evidence_by_id: Mapping[str, Evidence]) -> None
     _optional_string(item.verified_at, f"{item.id}.verified_at")
     if item.verification is Verification.STALE:
         _invalid("STALE is computed and cannot be persisted as current truth")
+    if item.verification is Verification.UNVERIFIED and (
+        item.verifier_rule is not None
+        or item.verified_at is not None
+        or item.verifying_evidence_ids
+    ):
+        _invalid(f"{item.id} UNVERIFIED cannot carry verification provenance")
     for field_name, references in (
         ("evidence_ids", item.evidence_ids),
         ("verifying_evidence_ids", item.verifying_evidence_ids),

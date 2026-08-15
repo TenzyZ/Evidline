@@ -195,6 +195,49 @@ class StateValidationTests(unittest.TestCase):
         self.assertIs(state.evidence[0].execution, Execution.EXECUTED)
         self.assertIs(state.claims[0].verification, Verification.UNVERIFIED)
 
+    def test_unverified_without_verification_provenance_is_valid(self) -> None:
+        validate_state(valid_state())
+
+    def test_unverified_with_verifier_rule_is_rejected(self) -> None:
+        state = valid_state()
+        claim = replace(
+            state.claims[0], verifier_rule=VerifierRule.R1_DIGEST_MATCH
+        )
+        with self.assertRaises(StateValidationError):
+            validate_state(replace(state, claims=(claim,)))
+
+    def test_unverified_with_verified_at_is_rejected(self) -> None:
+        state = valid_state()
+        claim = replace(state.claims[0], verified_at="2026-08-15T00:01:00+04:00")
+        with self.assertRaises(StateValidationError):
+            validate_state(replace(state, claims=(claim,)))
+
+    def test_unverified_with_verifying_evidence_is_rejected(self) -> None:
+        state = valid_state()
+        claim = replace(state.claims[0], verifying_evidence_ids=("evidence-1",))
+        with self.assertRaises(StateValidationError):
+            validate_state(replace(state, claims=(claim,)))
+
+    def test_unverified_with_all_provenance_is_rejected_by_parse(self) -> None:
+        raw = json.loads(serialize_state(valid_state()))
+        raw_claim = raw["claims"][0]
+        raw_claim["verifier_rule"] = VerifierRule.R1_DIGEST_MATCH.value
+        raw_claim["verified_at"] = "2026-08-15T00:01:00+04:00"
+        raw_claim["verifying_evidence_ids"] = ["evidence-1"]
+        with self.assertRaises(StateValidationError):
+            parse_state(json.dumps(raw))
+
+    def test_failed_with_verification_provenance_remains_valid(self) -> None:
+        state = valid_state()
+        claim = replace(
+            state.claims[0],
+            verification=Verification.FAILED,
+            verifier_rule=VerifierRule.R1_DIGEST_MATCH,
+            verified_at="2026-08-15T00:01:00+04:00",
+            verifying_evidence_ids=("evidence-1",),
+        )
+        validate_state(replace(state, claims=(claim,)))
+
     def test_stale_cannot_be_persisted_as_current_truth(self) -> None:
         state = valid_state()
         claim = replace(state.claims[0], verification=Verification.STALE)
