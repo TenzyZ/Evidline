@@ -2,6 +2,8 @@
 
 Status: Accepted
 
+Amended by: ADR-0010 (selection signals, V1 Phase 2)
+
 ## Context
 
 Fresh agent sessions need bounded, explainable continuity.
@@ -16,4 +18,5 @@ Handoff record.
 
 ## Consequences
 
-No compiler implementation exists yet.
+V1 Phase 2 implements the Context Compiler using the selection signals defined by
+ADR-0010.

@@ -95,11 +95,11 @@ Today Evidline refuses to persist `VERIFIED`, because the reproducible verifier 
 | Built | Typed and validated state foundation | [src/evidline/state.py](src/evidline/state.py) |
 | Built | State validation rules | [src/evidline/state.py](src/evidline/state.py) |
 | Built | Minimal CLI | [src/evidline/cli.py](src/evidline/cli.py) |
+| Built | Context compiler | [src/evidline/context.py](src/evidline/context.py) |
 | Built | MIT license | [LICENSE](LICENSE) |
 | Designed | Mutation decision model | [ADR-0006](docs/adr/ADR-0006-mutation-policy.md) |
 | Designed | Human controlled authority model | [ADR-0009](docs/adr/ADR-0009-human-controlled-authority.md) |
 | Designed | V1 architecture | [Architecture decisions](docs/adr/) |
-| Not started | Context compiler | [ADR-0005](docs/adr/ADR-0005-context-compiler.md) |
 | Not started | Claude Code adapter | [ADR-0008](docs/adr/ADR-0008-claude-and-codex-adapters.md) |
 | Not started | Codex adapter | [ADR-0008](docs/adr/ADR-0008-claude-and-codex-adapters.md) |
 | Not started | Verified handoff | [ADR-0005](docs/adr/ADR-0005-context-compiler.md) |
@@ -107,7 +107,7 @@ Today Evidline refuses to persist `VERIFIED`, because the reproducible verifier 
 | Not started | Benchmark | [AGENTS.md](AGENTS.md) |
 | Not started | Published package or release | [pyproject.toml](pyproject.toml) |
 
-There is no complete product surface yet. The context compiler, mutation decision engine, verified handoff, doctor command, Claude Code adapter, Codex adapter, `.evidline/` initialization workflow, and any published release are still future work.
+There is no complete product surface yet. The mutation decision engine, verified handoff, doctor command, Claude Code adapter, Codex adapter, `.evidline/` initialization workflow, and any published release are still future work.
 
 ## V1 goals and limits
 
