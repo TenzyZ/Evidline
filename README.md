@@ -52,7 +52,7 @@ Fresh evidence gathered from the repository right now is worth more than remembe
 When an agent proposes a change, Evidline is designed to check whether the change is supported before it is accepted. The image below shows the five checks in order.
 
 <p align="center">
-  <img src="docs/assets/readme/03_mutation_reasoning.png" alt="Design for mutation reasoning: boundary, classify, scope, evidence and invariants, then disposition. Not implemented yet." width="960">
+  <img src="docs/assets/readme/03_mutation_reasoning.png" alt="Design for mutation reasoning: boundary, classify, scope, evidence and invariants, then disposition." width="960">
 </p>
 
 The five checks:
@@ -65,7 +65,7 @@ The five checks:
 
 The disposition has three outcomes. `ALLOW` means the check found no problem, and Evidline stays silent. It does not mean Evidline gives the agent more permissions. `ASK` means a human decision or more information is needed. `BLOCK` means the change cannot currently be justified, and Evidline explains the exact target, the reason, the missing requirement, and the smallest safe next step.
 
-The mutation decision engine is not implemented yet. ALLOW, ASK, and BLOCK are part of the V1 design, not running product features.
+The pure core of the mutation decision engine is implemented in [src/evidline/mutation.py](src/evidline/mutation.py). CLI integration, hooks, and live enforcement are still future work.
 
 ## State and evidence foundation
 
@@ -97,7 +97,7 @@ Today Evidline refuses to persist `VERIFIED`, because the reproducible verifier 
 | Built | Minimal CLI | [src/evidline/cli.py](src/evidline/cli.py) |
 | Built | Context compiler | [src/evidline/context.py](src/evidline/context.py) |
 | Built | MIT license | [LICENSE](LICENSE) |
-| Designed | Mutation decision model | [ADR-0006](docs/adr/ADR-0006-mutation-policy.md) |
+| Built | Mutation decision engine | [src/evidline/mutation.py](src/evidline/mutation.py) |
 | Designed | Human controlled authority model | [ADR-0009](docs/adr/ADR-0009-human-controlled-authority.md) |
 | Designed | V1 architecture | [Architecture decisions](docs/adr/) |
 | Not started | Claude Code adapter | [ADR-0008](docs/adr/ADR-0008-claude-and-codex-adapters.md) |
@@ -107,7 +107,7 @@ Today Evidline refuses to persist `VERIFIED`, because the reproducible verifier 
 | Not started | Benchmark | [AGENTS.md](AGENTS.md) |
 | Not started | Published package or release | [pyproject.toml](pyproject.toml) |
 
-There is no complete product surface yet. The mutation decision engine, verified handoff, doctor command, Claude Code adapter, Codex adapter, `.evidline/` initialization workflow, and any published release are still future work.
+There is no complete product surface yet. Verified handoff, doctor command, Claude Code adapter, Codex adapter, `.evidline/` initialization workflow, and any published release are still future work.
 
 ## V1 goals and limits
 
