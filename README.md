@@ -65,7 +65,7 @@ The five checks:
 
 The disposition has three outcomes. `ALLOW` means the check found no policy problem and carries no failure reasons or next step. It does not mean Evidline gives the agent more permissions. `ASK` means a human decision or more information is needed. `BLOCK` means the change cannot currently be justified, and Evidline explains the exact target, the reason, the missing requirement, and the smallest safe next step.
 
-The pure core of the mutation decision engine is implemented in [src/evidline/mutation.py](src/evidline/mutation.py). The manually invoked `check-mutation` CLI provides non-enforcing inspection. It grants no permission, executes no mutation, and is not live enforcement; hooks and adapters remain future work.
+The pure core of the mutation decision engine is implemented in [src/evidline/mutation.py](src/evidline/mutation.py). The manually invoked `check-mutation` CLI provides non-enforcing inspection. It grants no permission, executes no mutation, and is not live enforcement. The bounded, inactive-by-default Claude Code transport is documented in the [Claude Code adapter guide](docs/claude-code-adapter.md).
 
 ## State and evidence foundation
 
@@ -102,14 +102,14 @@ Today Evidline refuses to persist `VERIFIED`, because the reproducible verifier 
 | Built | Mutation decision engine | [src/evidline/mutation.py](src/evidline/mutation.py) |
 | Designed | Human controlled authority model | [ADR-0009](docs/adr/ADR-0009-human-controlled-authority.md) |
 | Designed | V1 architecture | [Architecture decisions](docs/adr/) |
-| Not started | Claude Code adapter | [ADR-0008](docs/adr/ADR-0008-claude-and-codex-adapters.md) |
+| Built | Claude Code adapter transport | [Claude Code adapter guide](docs/claude-code-adapter.md) |
 | Not started | Codex adapter | [ADR-0008](docs/adr/ADR-0008-claude-and-codex-adapters.md) |
 | Not started | Verified handoff | [ADR-0005](docs/adr/ADR-0005-context-compiler.md) |
 | Not started | Doctor command | [AGENTS.md](AGENTS.md) |
 | Not started | Benchmark | [AGENTS.md](AGENTS.md) |
 | Not started | Published package or release | [pyproject.toml](pyproject.toml) |
 
-There is no complete product surface yet. Verified handoff, doctor command, Claude Code adapter, Codex adapter, live enforcement, and any published release are still future work.
+There is no complete product surface yet. Verified handoff, doctor command, Codex adapter, Claude hook activation, live enforcement, and any published release are still future work.
 
 A local CLI flow is:
 
