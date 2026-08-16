@@ -17,6 +17,8 @@ import stat
 import tempfile
 from typing import Any, Final, Mapping, NoReturn
 
+from evidline import paths as _paths
+
 
 SCHEMA_VERSION: Final = 1
 STATE_DIRECTORY: Final = ".evidline"
@@ -169,6 +171,10 @@ class StateNotInitializedError(StateError):
     """The state directory or durable state file is absent."""
 
 
+class StateAlreadyInitializedError(StateError):
+    """Exclusive initialization found an existing durable state file."""
+
+
 class StateValidationError(StateError):
     """The complete state document is structurally invalid."""
 
@@ -187,6 +193,87 @@ class StateConflictError(StateError):
 
 class StateIOError(StateError):
     """State could not be accessed safely."""
+
+
+def resolve_initialization_root(project_root: str | os.PathLike[str]) -> Path:
+    """Return a canonical existing directory suitable for initialization."""
+
+    try:
+        root_text = os.fspath(project_root)
+    except TypeError as exc:
+        raise StateIOError("project root is not a path") from exc
+    if not isinstance(root_text, str) or "\0" in root_text:
+        raise StateIOError("project root is not a safe text path")
+    try:
+        root = Path(os.path.realpath(root_text, strict=True))
+        if not stat.S_ISDIR(root.stat().st_mode):
+            raise StateIOError("project root is not a directory")
+        anchor = Path(root.anchor)
+        if _paths.has_protected_component(anchor, root):
+            raise StateValidationError(
+                "project root contains a protected path component"
+            )
+    except StateError:
+        raise
+    except FileNotFoundError as exc:
+        raise StateIOError("project root is absent") from exc
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise StateIOError("project root cannot be resolved") from exc
+    return root
+
+
+def initialize_project(
+    project_root: str | os.PathLike[str],
+    *,
+    project: Project,
+) -> StateDocument:
+    """Create the initial durable state exactly once."""
+
+    root = resolve_initialization_root(project_root)
+    document = StateDocument(
+        schema_version=SCHEMA_VERSION,
+        revision=0,
+        project=project,
+        invariants=(),
+        decisions=(),
+        tasks=(),
+        claims=(),
+        evidence=(),
+        counters={},
+    )
+    payload = serialize_state(document).encode("utf-8")
+
+    lexical_directory = root / STATE_DIRECTORY
+    try:
+        lexical_directory.mkdir(exist_ok=True)
+    except OSError as exc:
+        raise StateIOError("state directory cannot be created") from exc
+    try:
+        state_directory, state_path = _state_locations(root, require_file=False)
+    except StateNotInitializedError as exc:
+        raise StateIOError("state directory cannot be accessed safely") from exc
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        file_descriptor = os.open(state_path, flags, 0o644)
+    except FileExistsError as exc:
+        raise StateAlreadyInitializedError("state file already exists") from exc
+    except OSError as exc:
+        raise StateIOError("state file cannot be created") from exc
+
+    try:
+        with os.fdopen(file_descriptor, "wb") as stream:
+            written = stream.write(payload)
+            if written != len(payload):
+                raise OSError("incomplete state write")
+            stream.flush()
+            os.fsync(stream.fileno())
+        _fsync_directory(state_directory)
+    except OSError as exc:
+        raise StateIOError("initial state write failed") from exc
+    return document
 
 
 def get_state_path(project_root: str | os.PathLike[str]) -> Path:

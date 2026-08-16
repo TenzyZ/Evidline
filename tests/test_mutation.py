@@ -21,6 +21,7 @@ from evidline.mutation import (
     decide_mutation,
     evaluate_and_decide,
     explain,
+    load_and_decide,
     render_decision_json,
 )
 from evidline.paths import PathEvaluation
@@ -37,9 +38,12 @@ from evidline.state import (
     InvariantStatus,
     Project,
     StateDocument,
+    StateNotInitializedError,
+    StateValidationError,
     Task,
     TaskStatus,
     Verification,
+    serialize_state,
 )
 
 APPROVED_AT = "2026-08-15T00:00:00+04:00"
@@ -1185,6 +1189,49 @@ class EvaluateAndDecideTests(unittest.TestCase):
                 make_state(),
             )
             self.assertEqual(decision.outcome, MutationOutcome.ALLOW, target)
+
+
+class Phase4LoadAndDecideTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / "project"
+        self.root.mkdir()
+        (self.root / ".evidline").mkdir()
+        self.state = make_state(tasks=(make_task(),))
+        (self.root / ".evidline" / "state.json").write_text(
+            serialize_state(self.state), encoding="utf-8"
+        )
+        self.request = make_request(Intent.REQUESTED, MutationRisk.LOW)
+
+    def test_project_discovery_failure_is_not_initialized(self) -> None:
+        unrelated = Path(self.temporary.name) / "unrelated"
+        unrelated.mkdir()
+        with self.assertRaises(StateNotInitializedError):
+            load_and_decide(unrelated, self.request, "src/app.py")
+
+    def test_state_load_failure_is_preserved(self) -> None:
+        (self.root / ".evidline" / "state.json").write_text("{", encoding="utf-8")
+        with self.assertRaises(StateValidationError):
+            load_and_decide(self.root, self.request, "src/app.py")
+
+    def test_matches_existing_evaluate_and_decide(self) -> None:
+        expected = evaluate_and_decide(
+            self.request, self.root, "src/app.py", self.state
+        )
+        actual = load_and_decide(self.root, self.request, "src/app.py")
+        self.assertEqual(actual, expected)
+
+    def test_wrapper_adds_no_policy_behavior(self) -> None:
+        sentinel = mock.sentinel.decision
+        with mock.patch(
+            "evidline.mutation.evaluate_and_decide", return_value=sentinel
+        ) as delegated:
+            result = load_and_decide(self.root, self.request, "src/app.py")
+        self.assertIs(result, sentinel)
+        delegated.assert_called_once_with(
+            self.request, self.root.resolve(), "src/app.py", self.state
+        )
 
 
 if __name__ == "__main__":
