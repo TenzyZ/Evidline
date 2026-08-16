@@ -15,6 +15,8 @@ import json
 import os
 from typing import Final
 
+from evidline import paths as _paths
+from evidline import state as _state
 from evidline.paths import (
     PathEvaluation,
     evaluate_mutation_path,
@@ -323,6 +325,20 @@ def evaluate_and_decide(
 
     evaluation = evaluate_mutation_path(root, target)
     return decide_mutation(request, evaluation, state)
+
+
+def load_and_decide(
+    project_root: str | os.PathLike[str],
+    request: MutationRequest,
+    target: str | os.PathLike[str],
+) -> MutationDecision:
+    """Discover and load current state before evaluating one target."""
+
+    root = _paths.discover_project_root(project_root)
+    if root is None:
+        raise _state.StateNotInitializedError("project root could not be discovered")
+    state = _state.load_state(root)
+    return evaluate_and_decide(request, root, target, state)
 
 
 def explain(decision: MutationDecision) -> str:

@@ -22,6 +22,7 @@ from evidline.state import (
     InvariantStatus,
     LOCK_FILENAME,
     Project,
+    StateAlreadyInitializedError,
     StateConflictError,
     StateDocument,
     StateIOError,
@@ -33,6 +34,7 @@ from evidline.state import (
     UnsupportedSchemaError,
     Verification,
     VerifierRule,
+    initialize_project,
     load_state,
     parse_state,
     serialize_state,
@@ -315,6 +317,77 @@ class StatePersistenceTests(unittest.TestCase):
         with self.assertRaises(StateNotInitializedError):
             write_state(other_root, valid_state(), expected_revision=0)
         self.assertFalse((other_root / ".evidline").exists())
+
+
+class Phase4InitializationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / "project"
+        self.root.mkdir()
+        self.project = Project(
+            name="project",
+            purpose="Purpose not yet stated.",
+            ignore_globs=(),
+            default_budget_chars=8000,
+        )
+
+    def test_creates_valid_empty_revision_zero_state(self) -> None:
+        created = initialize_project(self.root, project=self.project)
+        loaded = load_state(self.root)
+        self.assertEqual(created, loaded)
+        self.assertEqual(loaded.revision, 0)
+        self.assertEqual(
+            (
+                loaded.invariants,
+                loaded.decisions,
+                loaded.tasks,
+                loaded.claims,
+                loaded.evidence,
+            ),
+            ((), (), (), (), ()),
+        )
+        self.assertEqual(loaded.counters, {})
+        self.assertEqual(parse_state(serialize_state(loaded)), loaded)
+
+    def test_exclusive_create_refuses_existing_valid_state_unchanged(self) -> None:
+        initialize_project(self.root, project=self.project)
+        state_path = self.root / ".evidline" / "state.json"
+        before = state_path.read_bytes()
+        with self.assertRaises(StateAlreadyInitializedError):
+            initialize_project(self.root, project=self.project)
+        self.assertEqual(state_path.read_bytes(), before)
+
+    def test_protected_root_is_refused_without_initialization(self) -> None:
+        protected = Path(self.temporary.name) / ".git" / "nested"
+        protected.mkdir(parents=True)
+        with self.assertRaises(StateValidationError):
+            initialize_project(protected, project=self.project)
+        self.assertFalse((protected / ".evidline").exists())
+
+    def test_success_creates_no_extra_files(self) -> None:
+        initialize_project(self.root, project=self.project)
+        self.assertEqual(
+            [entry.name for entry in (self.root / ".evidline").iterdir()],
+            ["state.json"],
+        )
+
+    def test_evidline_regular_file_is_io_failure(self) -> None:
+        (self.root / ".evidline").write_text("user data", encoding="utf-8")
+        with self.assertRaises(StateIOError):
+            initialize_project(self.root, project=self.project)
+        self.assertEqual(
+            (self.root / ".evidline").read_text(encoding="utf-8"), "user data"
+        )
+
+    def test_missing_root_is_io_failure(self) -> None:
+        with self.assertRaises(StateIOError):
+            initialize_project(self.root / "missing", project=self.project)
+
+    def test_create_os_error_is_translated(self) -> None:
+        with mock.patch("evidline.state.os.open", side_effect=OSError("denied")):
+            with self.assertRaises(StateIOError):
+                initialize_project(self.root, project=self.project)
 
 
 if __name__ == "__main__":

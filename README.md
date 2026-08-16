@@ -63,9 +63,9 @@ The five checks:
 - **Evidence and invariants**: are the facts established, and do the important project rules hold?
 - **Disposition**: should the proposal be allowed, should it ask the human, or should it be blocked?
 
-The disposition has three outcomes. `ALLOW` means the check found no problem, and Evidline stays silent. It does not mean Evidline gives the agent more permissions. `ASK` means a human decision or more information is needed. `BLOCK` means the change cannot currently be justified, and Evidline explains the exact target, the reason, the missing requirement, and the smallest safe next step.
+The disposition has three outcomes. `ALLOW` means the check found no policy problem and carries no failure reasons or next step. It does not mean Evidline gives the agent more permissions. `ASK` means a human decision or more information is needed. `BLOCK` means the change cannot currently be justified, and Evidline explains the exact target, the reason, the missing requirement, and the smallest safe next step.
 
-The pure core of the mutation decision engine is implemented in [src/evidline/mutation.py](src/evidline/mutation.py). CLI integration, hooks, and live enforcement are still future work.
+The pure core of the mutation decision engine is implemented in [src/evidline/mutation.py](src/evidline/mutation.py). The manually invoked `check-mutation` CLI provides non-enforcing inspection. It grants no permission, executes no mutation, and is not live enforcement; hooks and adapters remain future work.
 
 ## State and evidence foundation
 
@@ -94,7 +94,9 @@ Today Evidline refuses to persist `VERIFIED`, because the reproducible verifier 
 | Built | Path safety foundation | [src/evidline/paths.py](src/evidline/paths.py) |
 | Built | Typed and validated state foundation | [src/evidline/state.py](src/evidline/state.py) |
 | Built | State validation rules | [src/evidline/state.py](src/evidline/state.py) |
-| Built | Minimal CLI | [src/evidline/cli.py](src/evidline/cli.py) |
+| Built | CLI with `init`, `status`, `context`, and `check-mutation` | [src/evidline/cli.py](src/evidline/cli.py) |
+| Built | `.evidline/` initialization | [src/evidline/state.py](src/evidline/state.py) |
+| Built | Deterministic project status | [src/evidline/status.py](src/evidline/status.py) |
 | Built | Context compiler | [src/evidline/context.py](src/evidline/context.py) |
 | Built | MIT license | [LICENSE](LICENSE) |
 | Built | Mutation decision engine | [src/evidline/mutation.py](src/evidline/mutation.py) |
@@ -107,7 +109,18 @@ Today Evidline refuses to persist `VERIFIED`, because the reproducible verifier 
 | Not started | Benchmark | [AGENTS.md](AGENTS.md) |
 | Not started | Published package or release | [pyproject.toml](pyproject.toml) |
 
-There is no complete product surface yet. Verified handoff, doctor command, Claude Code adapter, Codex adapter, `.evidline/` initialization workflow, and any published release are still future work.
+There is no complete product surface yet. Verified handoff, doctor command, Claude Code adapter, Codex adapter, live enforcement, and any published release are still future work.
+
+A local CLI flow is:
+
+```text
+evidline init
+→ evidline status
+→ evidline context
+→ evidline check-mutation --target src/app.py --risk LOW --intent REQUESTED
+```
+
+`check-mutation` only reports the current policy result. It grants no permission, executes no mutation, and does not install or activate live enforcement.
 
 ## V1 goals and limits
 
