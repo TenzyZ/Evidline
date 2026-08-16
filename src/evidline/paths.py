@@ -14,7 +14,7 @@ import re
 from typing import Final
 
 
-_PROTECTED_DIRECTORIES: Final = (".git", ".evidline")
+PROTECTED_DIRECTORIES: Final = (".git", ".evidline")
 _WINDOWS_DEVICE_NAMES: Final = {
     "CON",
     "PRN",
@@ -122,13 +122,32 @@ def evaluate_mutation_path(
     if target_comparison == root_comparison:
         return _unsafe(canonical_root, canonical_target, "project root is not a file target")
 
-    relative = os.path.relpath(target_comparison, root_comparison)
-    first_component = Path(relative).parts[0]
-    protected = {name.casefold() for name in _PROTECTED_DIRECTORIES}
-    if first_component.casefold() in protected:
+    if has_protected_component(canonical_root, canonical_target):
         return _unsafe(canonical_root, canonical_target, "target is protected project metadata")
 
     return PathEvaluation(True, canonical_root, canonical_target, None)
+
+
+def has_protected_component(root: Path, target: Path) -> bool:
+    """Return True when any root-relative path component is protected metadata.
+
+    Comparison is exact component equality after casefold.  ``root`` and
+    ``target`` are normalized with the same ``os.path.normcase`` discipline as
+    path containment; ``target`` must be contained in ``root``.  A ``.git`` or
+    ``.evidline`` component at any depth is protected.
+    """
+
+    root_text = os.path.normcase(os.fspath(root))
+    target_text = os.path.normcase(os.fspath(target))
+    try:
+        common = os.path.commonpath((root_text, target_text))
+    except ValueError:
+        return False
+    if common != root_text:
+        return False
+    relative = os.path.relpath(target_text, root_text)
+    protected = {name.casefold() for name in PROTECTED_DIRECTORIES}
+    return any(part.casefold() in protected for part in Path(relative).parts)
 
 
 def _path_text(value: str | os.PathLike[str]) -> str | None:
