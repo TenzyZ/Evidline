@@ -9,6 +9,11 @@ import unittest
 from unittest import mock
 
 
+from evidline.paths import (
+    ScopePathSemantics,
+    host_scope_semantics,
+    normalize_scope_for_semantics,
+)
 from evidline.state import (
     Claim,
     ClaimFreshness,
@@ -20,6 +25,7 @@ from evidline.state import (
     Invariant,
     InvariantEnforcement,
     InvariantStatus,
+    IncompatibleScopeSemanticsError,
     LOCK_FILENAME,
     Project,
     SCHEMA_VERSION,
@@ -56,7 +62,7 @@ def valid_state(*, revision: int = 0) -> StateDocument:
         digest=DIGEST,
     )
     return StateDocument(
-        schema_version=2,
+        schema_version=3,
         revision=revision,
         project=Project(
             name="Evidline",
@@ -70,6 +76,7 @@ def valid_state(*, revision: int = 0) -> StateDocument:
                 description="Never promote unsupported claims",
                 enforcement=InvariantEnforcement.BLOCK,
                 status=InvariantStatus.ACTIVE,
+                governed_scope=("src",),
             ),
         ),
         decisions=(
@@ -94,6 +101,7 @@ def valid_state(*, revision: int = 0) -> StateDocument:
                 authorized_scope=("src", "docs/api"),
                 approved_at="2026-08-15T00:00:00+04:00",
                 approval_channel="interactive",
+                acknowledged_invariant_ids=("inv-1",),
             ),
         ),
         claims=(
@@ -108,17 +116,21 @@ def valid_state(*, revision: int = 0) -> StateDocument:
         ),
         evidence=(evidence,),
         counters={"claim": 1, "evidence": 1},
+        scope_semantics=host_scope_semantics(),
     )
 
 
 class StateValidationTests(unittest.TestCase):
-    def test_schema_version_is_two(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 2)
+    def test_schema_version_is_three(self) -> None:
+        self.assertEqual(SCHEMA_VERSION, 3)
 
     def test_valid_state_round_trip(self) -> None:
         state = valid_state()
         self.assertEqual(parse_state(serialize_state(state)), state)
         self.assertEqual(state.tasks[0].authorized_scope, ("src", "docs/api"))
+        self.assertEqual(state.invariants[0].governed_scope, ("src",))
+        self.assertEqual(state.tasks[0].acknowledged_invariant_ids, ("inv-1",))
+        self.assertIs(state.scope_semantics, host_scope_semantics())
 
     def test_serialization_is_deterministic(self) -> None:
         state = valid_state()
@@ -128,12 +140,51 @@ class StateValidationTests(unittest.TestCase):
         self.assertEqual(json.loads(first)["revision"], 0)
 
     def test_unsupported_schema_is_rejected(self) -> None:
-        for version in (1, 3):
+        for version in (1, 2, 4):
             with self.subTest(version=version):
                 raw = json.loads(serialize_state(valid_state()))
                 raw["schema_version"] = version
                 with self.assertRaises(UnsupportedSchemaError):
                     parse_state(json.dumps(raw))
+        old = json.loads(serialize_state(valid_state()))
+        old["schema_version"] = 2
+        del old["scope_semantics"]
+        del old["invariants"][0]["governed_scope"]
+        del old["tasks"][0]["acknowledged_invariant_ids"]
+        with self.assertRaises(UnsupportedSchemaError):
+            parse_state(json.dumps(old))
+
+    def test_schema_three_exact_keys_are_required(self) -> None:
+        raw = json.loads(serialize_state(valid_state()))
+        self.assertEqual(raw["scope_semantics"], host_scope_semantics().value)
+        self.assertIn("governed_scope", raw["invariants"][0])
+        self.assertIn("acknowledged_invariant_ids", raw["tasks"][0])
+        for key in (
+            "scope_semantics",
+            "governed_scope",
+            "acknowledged_invariant_ids",
+        ):
+            with self.subTest(key=key):
+                candidate = json.loads(serialize_state(valid_state()))
+                target = candidate
+                if key == "governed_scope":
+                    target = candidate["invariants"][0]
+                elif key == "acknowledged_invariant_ids":
+                    target = candidate["tasks"][0]
+                del target[key]
+                with self.assertRaises(StateValidationError):
+                    parse_state(json.dumps(candidate))
+
+    def test_scope_semantics_marker_failures_are_rejected(self) -> None:
+        raw = json.loads(serialize_state(valid_state()))
+        for value in ("UNKNOWN", 1, None):
+            with self.subTest(value=value):
+                candidate = dict(raw)
+                candidate["scope_semantics"] = value
+                with self.assertRaises(StateValidationError):
+                    parse_state(json.dumps(candidate))
+        with self.assertRaises(StateValidationError):
+            validate_state(replace(valid_state(), scope_semantics="CASE_FOLDED"))
 
     def test_empty_authorized_scope_is_valid(self) -> None:
         state = valid_state()
@@ -174,6 +225,189 @@ class StateValidationTests(unittest.TestCase):
         raw["tasks"][0]["authorized_scope"] = "src"
         with self.assertRaises(StateValidationError):
             parse_state(json.dumps(raw))
+
+    def test_governed_scope_accepts_the_shared_scope_language(self) -> None:
+        state = valid_state()
+        for governed_scope in (
+            (),
+            (".",),
+            ("src",),
+            ("src/package/app.py",),
+            ("src", "docs/api"),
+        ):
+            with self.subTest(governed_scope=governed_scope):
+                invariant = replace(
+                    state.invariants[0],
+                    governed_scope=governed_scope,
+                )
+                validate_state(replace(state, invariants=(invariant,)))
+
+    def test_invalid_governed_scope_is_rejected(self) -> None:
+        state = valid_state()
+        invalid_scopes = (
+            ("",),
+            ("C:/outside",),
+            ("/outside",),
+            ("../outside",),
+            ("src/../outside",),
+            ("*.py",),
+            ("!src",),
+            ("src\0bad",),
+            ("src\nspoof",),
+            ("src/",),
+            ("src", "src"),
+        )
+        for governed_scope in invalid_scopes:
+            with self.subTest(governed_scope=governed_scope):
+                invariant = replace(
+                    state.invariants[0],
+                    governed_scope=governed_scope,
+                )
+                with self.assertRaises(StateValidationError):
+                    validate_state(replace(state, invariants=(invariant,)))
+        invariant = replace(state.invariants[0], governed_scope=["src"])
+        with self.assertRaises(StateValidationError):
+            validate_state(replace(state, invariants=(invariant,)))
+
+    def test_windows_invalid_governed_scope_rejects_under_folded_semantics(self) -> None:
+        state = valid_state()
+        invariant = replace(state.invariants[0], governed_scope=("CON",))
+        candidate = replace(
+            state,
+            invariants=(invariant,),
+            scope_semantics=ScopePathSemantics.CASE_FOLDED,
+        )
+        with mock.patch(
+            "evidline.state._paths.host_scope_semantics",
+            return_value=ScopePathSemantics.CASE_FOLDED,
+        ):
+            with self.assertRaises(StateValidationError):
+                validate_state(candidate)
+
+    def test_acknowledgements_must_resolve_only_to_invariants(self) -> None:
+        state = valid_state()
+        invalid = (
+            ("inv-missing",),
+            ("task-1",),
+            ("dec-1",),
+            ("claim-1",),
+            ("evidence-1",),
+            ("inv-1", "inv-1"),
+        )
+        for acknowledged in invalid:
+            with self.subTest(acknowledged=acknowledged):
+                task = replace(
+                    state.tasks[0],
+                    acknowledged_invariant_ids=acknowledged,
+                )
+                with self.assertRaises(StateValidationError):
+                    validate_state(replace(state, tasks=(task,)))
+        task = replace(state.tasks[0], acknowledged_invariant_ids=["inv-1"])
+        with self.assertRaises(StateValidationError):
+            validate_state(replace(state, tasks=(task,)))
+
+    def test_superseded_invariant_acknowledgement_is_valid(self) -> None:
+        state = valid_state()
+        old = Invariant(
+            id="inv-old",
+            description="Superseded constraint",
+            enforcement=InvariantEnforcement.BLOCK,
+            status=InvariantStatus.SUPERSEDED,
+            superseded_by="inv-1",
+            approved_at="2026-08-15T00:00:00+04:00",
+            approval_channel="interactive",
+            governed_scope=("src",),
+        )
+        task = replace(
+            state.tasks[0],
+            acknowledged_invariant_ids=("inv-old",),
+        )
+        validate_state(
+            replace(
+                state,
+                invariants=(state.invariants[0], old),
+                tasks=(task,),
+            )
+        )
+
+    def test_incompatible_scoped_states_fail_before_scope_normalization(self) -> None:
+        cases = (
+            (
+                ScopePathSemantics.CASE_FOLDED,
+                ScopePathSemantics.CASE_SENSITIVE,
+                normalize_scope_for_semantics(
+                    "Src", ScopePathSemantics.CASE_FOLDED
+                ),
+            ),
+            (
+                ScopePathSemantics.CASE_SENSITIVE,
+                ScopePathSemantics.CASE_FOLDED,
+                "Src",
+            ),
+            (
+                ScopePathSemantics.CASE_SENSITIVE,
+                ScopePathSemantics.CASE_FOLDED,
+                "src",
+            ),
+        )
+        for authored, reading, scope in cases:
+            with self.subTest(authored=authored, reading=reading, scope=scope):
+                state = valid_state()
+                task = replace(state.tasks[0], authorized_scope=(scope,))
+                invariant = replace(state.invariants[0], governed_scope=())
+                candidate = replace(
+                    state,
+                    tasks=(task,),
+                    invariants=(invariant,),
+                    scope_semantics=authored,
+                )
+                with (
+                    mock.patch(
+                        "evidline.state._paths.host_scope_semantics",
+                        return_value=reading,
+                    ),
+                    mock.patch(
+                        "evidline.state._paths.normalize_root_relative_scope"
+                    ) as normalizer,
+                ):
+                    with self.assertRaises(IncompatibleScopeSemanticsError):
+                        validate_state(candidate)
+                normalizer.assert_not_called()
+
+    def test_matching_semantics_and_empty_scope_exception_are_valid(self) -> None:
+        for semantics in ScopePathSemantics:
+            scope = normalize_scope_for_semantics("Src", semantics)
+            state = valid_state()
+            task = replace(state.tasks[0], authorized_scope=(scope,))
+            invariant = replace(state.invariants[0], governed_scope=())
+            candidate = replace(
+                state,
+                tasks=(task,),
+                invariants=(invariant,),
+                scope_semantics=semantics,
+            )
+            with mock.patch(
+                "evidline.state._paths.host_scope_semantics",
+                return_value=semantics,
+            ):
+                validate_state(candidate)
+
+        state = valid_state()
+        task = replace(state.tasks[0], authorized_scope=())
+        invariant = replace(state.invariants[0], governed_scope=())
+        foreign = (
+            ScopePathSemantics.CASE_SENSITIVE
+            if host_scope_semantics() is ScopePathSemantics.CASE_FOLDED
+            else ScopePathSemantics.CASE_FOLDED
+        )
+        validate_state(
+            replace(
+                state,
+                tasks=(task,),
+                invariants=(invariant,),
+                scope_semantics=foreign,
+            )
+        )
 
     def test_unknown_task_key_is_rejected(self) -> None:
         raw = json.loads(serialize_state(valid_state()))
@@ -372,6 +606,43 @@ class StatePersistenceTests(unittest.TestCase):
             write_state(other_root, valid_state(), expected_revision=0)
         self.assertFalse((other_root / ".evidline").exists())
 
+    def test_incompatible_write_leaves_state_and_revision_unchanged(self) -> None:
+        before = self.state_path.read_bytes()
+        foreign = (
+            ScopePathSemantics.CASE_SENSITIVE
+            if host_scope_semantics() is ScopePathSemantics.CASE_FOLDED
+            else ScopePathSemantics.CASE_FOLDED
+        )
+        with self.assertRaises(IncompatibleScopeSemanticsError):
+            write_state(
+                self.root,
+                replace(valid_state(), scope_semantics=foreign),
+                expected_revision=0,
+            )
+        self.assertEqual(self.state_path.read_bytes(), before)
+        self.assertEqual(load_state(self.root).revision, 0)
+
+    def test_ordinary_write_preserves_compatible_foreign_empty_marker(self) -> None:
+        state = valid_state()
+        task = replace(state.tasks[0], authorized_scope=())
+        invariant = replace(state.invariants[0], governed_scope=())
+        foreign = (
+            ScopePathSemantics.CASE_SENSITIVE
+            if host_scope_semantics() is ScopePathSemantics.CASE_FOLDED
+            else ScopePathSemantics.CASE_FOLDED
+        )
+        document = replace(
+            state,
+            tasks=(task,),
+            invariants=(invariant,),
+            scope_semantics=foreign,
+        )
+        self.state_path.write_text(serialize_state(document), encoding="utf-8")
+        updated = write_state(self.root, document, expected_revision=0)
+        self.assertIs(updated.scope_semantics, foreign)
+        self.assertIs(load_state(self.root).scope_semantics, foreign)
+        self.assertEqual(updated.revision, 1)
+
 
 class Phase4InitializationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -402,6 +673,7 @@ class Phase4InitializationTests(unittest.TestCase):
             ((), (), (), (), ()),
         )
         self.assertEqual(loaded.counters, {})
+        self.assertIs(loaded.scope_semantics, host_scope_semantics())
         self.assertEqual(parse_state(serialize_state(loaded)), loaded)
 
     def test_exclusive_create_refuses_existing_valid_state_unchanged(self) -> None:

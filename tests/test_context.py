@@ -50,7 +50,7 @@ from evidline.state import (
 
 def base_state(*, revision: int = 0) -> StateDocument:
     return StateDocument(
-        schema_version=2,
+        schema_version=3,
         revision=revision,
         project=Project(
             name="Evidline",

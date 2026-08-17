@@ -126,7 +126,7 @@ def build_state() -> StateDocument:
         ),
     )
     state = StateDocument(
-        schema_version=2,
+        schema_version=3,
         revision=7,
         project=Project(
             name="Evidline synthetic benchmark",
@@ -319,6 +319,7 @@ class BenchmarkFixture:
             self.root / ".evidline",
             self.root / ".git",
             self.root / "src" / ".git",
+            self.root / "src" / "governed",
             self.root / "docs",
             self.no_root,
         ):
@@ -327,6 +328,7 @@ class BenchmarkFixture:
             self.outside: "outside = True\n",
             self.root / ".git" / "config": "[core]\n\trepositoryformatversion = 0\n",
             self.root / "src" / "app.py": "VALUE = 1\n",
+            self.root / "src" / "governed" / "app.py": "VALUE = 1\n",
             self.root / "src" / ".git" / "hook": "synthetic hook target\n",
             self.root / "docs" / "note.md": "Synthetic benchmark note.\n",
         }

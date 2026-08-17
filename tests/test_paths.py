@@ -9,11 +9,14 @@ from unittest import mock
 
 
 from evidline.paths import (
+    ScopePathSemantics,
     _unsafe_windows_path,
     canonical_target_in_authorized_scope,
     discover_project_root,
     evaluate_mutation_path,
+    host_scope_semantics,
     normalize_root_relative_scope,
+    normalize_scope_for_semantics,
 )
 
 
@@ -186,6 +189,72 @@ class PathSafetyTests(unittest.TestCase):
             with self.subTest(scope=scope):
                 with self.assertRaises(ValueError):
                     normalize_root_relative_scope(scope)
+
+    def test_scope_semantics_flavours_are_explicit_and_deterministic(self) -> None:
+        self.assertEqual(
+            normalize_scope_for_semantics(
+                r"./Src\Package/",
+                ScopePathSemantics.CASE_FOLDED,
+            ),
+            "src/package",
+        )
+        self.assertEqual(
+            normalize_scope_for_semantics(
+                "./Src/Package/",
+                ScopePathSemantics.CASE_SENSITIVE,
+            ),
+            "Src/Package",
+        )
+        self.assertEqual(
+            host_scope_semantics(),
+            (
+                ScopePathSemantics.CASE_FOLDED
+                if os.name == "nt"
+                else ScopePathSemantics.CASE_SENSITIVE
+            ),
+        )
+
+    def test_explicit_host_flavour_matches_host_wrapper_corpus(self) -> None:
+        valid = (".", "src", "./src/package/", r"src\package")
+        for scope in valid:
+            with self.subTest(scope=scope):
+                self.assertEqual(
+                    normalize_scope_for_semantics(scope, host_scope_semantics()),
+                    normalize_root_relative_scope(scope),
+                )
+        invalid = (
+            "",
+            " src",
+            "C:/outside",
+            "/outside",
+            "../outside",
+            "src/../outside",
+            "*.py",
+            "!src",
+            "src\0bad",
+            "src\nspoof",
+        )
+        for scope in invalid:
+            with self.subTest(scope=scope):
+                with self.assertRaises(ValueError):
+                    normalize_root_relative_scope(scope)
+                with self.assertRaises(ValueError):
+                    normalize_scope_for_semantics(scope, host_scope_semantics())
+
+    def test_case_folded_flavour_preserves_windows_rejections_on_any_host(self) -> None:
+        for scope in (
+            "CON",
+            "aux.txt",
+            "folder/COM1.log",
+            "trailing. ",
+            "stream:name",
+        ):
+            with self.subTest(scope=scope):
+                with self.assertRaises(ValueError):
+                    normalize_scope_for_semantics(
+                        scope,
+                        ScopePathSemantics.CASE_FOLDED,
+                    )
 
     def test_canonical_target_scope_matching_is_component_aware(self) -> None:
         target = self.root / "src" / "package" / "app.py"

@@ -106,6 +106,27 @@ class BenchmarkTests(unittest.TestCase):
                 self.assertEqual(result["outcome"], "ASK")
                 self.assertIsNone(result["authorizing_task_id"])
 
+    def test_vab2_structural_scope_and_adapter_proofs(self) -> None:
+        blocked = self.results["core.governed_block_unacknowledged"]["actual"]
+        self.assertEqual(blocked["outcome"], "BLOCK")
+        self.assertEqual(blocked["unacknowledged"], ["inv-block"])
+        acknowledged = self.results["core.governed_block_acknowledged"]["actual"]
+        self.assertEqual(acknowledged["outcome"], "ALLOW")
+        conflict = self.results[
+            "core.governed_acknowledgement_does_not_suppress_asserted_conflict"
+        ]["actual"]
+        self.assertEqual(conflict["outcome"], "BLOCK")
+        self.assertEqual(conflict["conflicting"], ["inv-block"])
+        for scenario_id in (
+            "claude.governed_block_unacknowledged",
+            "codex.governed_block_unacknowledged",
+        ):
+            with self.subTest(scenario_id=scenario_id):
+                result = self.results[scenario_id]["actual"]
+                self.assertEqual(result["policy"], "BLOCK")
+                self.assertEqual(result["permission"], "deny")
+                self.assertTrue(result["contains_unacknowledged"])
+
     def test_cross_harness_parity_and_asymmetry(self) -> None:
         self.assert_category_matched("cross")
         result = self.results["cross.safe_target_asymmetry"]["actual"]
@@ -120,7 +141,10 @@ class BenchmarkTests(unittest.TestCase):
         }
         self.assertEqual(set(blockers), {"VAB-1", "VAB-2"})
         self.assertEqual(blockers["VAB-1"]["status"], "IMPLEMENTED_PENDING_REVIEW")
-        self.assertEqual(blockers["VAB-2"]["status"], "OPEN")
+        self.assertEqual(
+            blockers["VAB-2"]["status"],
+            "IMPLEMENTED_PENDING_REVIEW",
+        )
         self.assertEqual(self.observed["contract"]["v1_acceptance"], "BLOCKED")
 
     def test_live_verification_is_not_attempted(self) -> None:

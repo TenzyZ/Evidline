@@ -12,7 +12,9 @@ import unittest
 from unittest import mock
 
 from evidline import mutation
+from evidline import state as state_module
 from evidline.cli import main
+from evidline.paths import ScopePathSemantics, host_scope_semantics
 from evidline.state import (
     Claim,
     ClaimFreshness,
@@ -27,6 +29,7 @@ from evidline.state import (
     Project,
     StateDocument,
     StateIOError,
+    StateValidationError,
     Task,
     TaskStatus,
     TRUSTED_APPROVAL_CHANNEL,
@@ -56,7 +59,7 @@ def high_state() -> StateDocument:
         execution=Execution.EXECUTED,
     )
     return StateDocument(
-        schema_version=2,
+        schema_version=3,
         revision=0,
         project=Project("project", "Phase 4", (), 8000),
         invariants=(
@@ -308,7 +311,7 @@ class CliTests(unittest.TestCase):
                     f"root: {self.root.resolve()}",
                     f"state: {state_path.resolve()}",
                     "status_schema_version: 1",
-                    "state_schema_version: 2",
+                    "state_schema_version: 3",
                     "state_revision: 0",
                     "project: project",
                     "default_budget_chars: 8000",
@@ -418,6 +421,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(task.status, TaskStatus.ACTIVE)
         self.assertEqual(task.intent, Intent.AUTHORIZED)
         self.assertEqual(task.authorized_scope, (normalized_package_scope, "docs"))
+        self.assertEqual(task.acknowledged_invariant_ids, ())
         self.assertEqual(task.approval_channel, TRUSTED_APPROVAL_CHANNEL)
         self.assertEqual(task.asserted_actor, TRUSTED_ASSERTED_ACTOR)
         self.assertEqual(task.approved_at, "2026-08-17T12:00:00+00:00")
@@ -429,6 +433,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(updated.evidence, before.evidence)
         self.assertEqual(updated.counters, before.counters)
         self.assertTrue(state_path.is_file())
+        self.assertIn("task_description: Active Phase 4 task\n", stdout)
+        self.assertIn("acknowledged_invariant_ids:\n- (none)\n", stdout)
 
     def test_approve_cancellation_and_noninteractive_refusal_do_not_mutate(self) -> None:
         state_path = self.write_state(self.approval_state())
@@ -503,6 +509,215 @@ class CliTests(unittest.TestCase):
         self.assertEqual((code, stderr), (0, ""))
         self.assertIn("authorized_scope:\n- .\n", stdout)
         self.assertEqual(load_state(self.root).tasks[0].authorized_scope, (".",))
+
+    def test_approve_records_block_acknowledgement(self) -> None:
+        self.write_state(self.approval_state())
+        with mock.patch("evidline.cli.datetime") as clock:
+            clock.now.return_value.isoformat.return_value = "2026-08-17T12:00:00+00:00"
+            code, stdout, stderr = self.run_cli(
+                "approve",
+                "task-1",
+                "--root",
+                str(self.root),
+                "--scope",
+                "src",
+                "--acknowledge",
+                "inv-1",
+                stdin_text="task-1\n",
+                interactive=True,
+            )
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertIn(
+            "- inv-1 (enforcement=BLOCK, status=ACTIVE)\n",
+            stdout,
+        )
+        task = load_state(self.root).tasks[0]
+        self.assertEqual(task.acknowledged_invariant_ids, ("inv-1",))
+
+    def test_approve_preserves_multiple_acknowledgement_order_and_marks_inert(self) -> None:
+        document = self.approval_state()
+        advise = Invariant(
+            id="inv-advise",
+            description="Advisory constraint",
+            enforcement=InvariantEnforcement.ADVISE,
+            status=InvariantStatus.ACTIVE,
+            governed_scope=("src",),
+        )
+        current = Invariant(
+            id="inv-current",
+            description="Current constraint",
+            enforcement=InvariantEnforcement.BLOCK,
+            status=InvariantStatus.ACTIVE,
+        )
+        old = Invariant(
+            id="inv-old",
+            description="Superseded constraint",
+            enforcement=InvariantEnforcement.BLOCK,
+            status=InvariantStatus.SUPERSEDED,
+            superseded_by="inv-current",
+            approved_at="2026-08-17T00:00:00+04:00",
+            approval_channel="interactive",
+            governed_scope=("src",),
+        )
+        document = replace(
+            document,
+            invariants=document.invariants + (advise, current, old),
+        )
+        self.write_state(document)
+        with mock.patch("evidline.cli.datetime") as clock:
+            clock.now.return_value.isoformat.return_value = "2026-08-17T12:00:00+00:00"
+            code, stdout, stderr = self.run_cli(
+                "approve",
+                "task-1",
+                "--root",
+                str(self.root),
+                "--scope",
+                "src",
+                "--acknowledge",
+                "inv-old",
+                "--acknowledge",
+                "inv-1",
+                "--acknowledge",
+                "inv-advise",
+                stdin_text="task-1\n",
+                interactive=True,
+            )
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertLess(stdout.index("- inv-old"), stdout.index("- inv-1"))
+        self.assertLess(stdout.index("- inv-1"), stdout.index("- inv-advise"))
+        self.assertIn(
+            "inv-old (enforcement=BLOCK, status=SUPERSEDED, inert)",
+            stdout,
+        )
+        self.assertIn(
+            "inv-advise (enforcement=ADVISE, status=ACTIVE, inert)",
+            stdout,
+        )
+        self.assertEqual(
+            load_state(self.root).tasks[0].acknowledged_invariant_ids,
+            ("inv-old", "inv-1", "inv-advise"),
+        )
+
+    def test_approve_rejects_duplicate_unknown_and_non_invariant_ids_unchanged(self) -> None:
+        state_path = self.write_state(self.approval_state())
+        before = state_path.read_bytes()
+        cases = (
+            ("--acknowledge", "inv-1", "--acknowledge", "inv-1"),
+            ("--acknowledge", "inv-missing"),
+            ("--acknowledge", "task-1"),
+            ("--acknowledge", "dec-1"),
+            ("--acknowledge", "claim-1"),
+            ("--acknowledge", "evidence-1"),
+        )
+        for extra in cases:
+            with self.subTest(extra=extra):
+                code, stdout, stderr = self.run_cli(
+                    "approve",
+                    "task-1",
+                    "--root",
+                    str(self.root),
+                    "--scope",
+                    "src",
+                    *extra,
+                    stdin_text="task-1\n",
+                    interactive=True,
+                )
+                self.assertEqual(code, 6)
+                self.assertEqual(stdout, "")
+                self.assertIn("invalid approval acknowledgement", stderr)
+                self.assertEqual(state_path.read_bytes(), before)
+
+    def test_approve_requires_exact_task_id_and_validates_before_prompt(self) -> None:
+        state_path = self.write_state(self.approval_state())
+        before = state_path.read_bytes()
+        code, stdout, stderr = self.run_cli(
+            "approve",
+            "task-1",
+            "--root",
+            str(self.root),
+            "--scope",
+            "src",
+            stdin_text="task-1 \n",
+            interactive=True,
+        )
+        self.assertEqual((code, stderr), (6, ""))
+        self.assertIn("approval cancelled; state unchanged", stdout)
+        self.assertEqual(state_path.read_bytes(), before)
+
+        original_validate = state_module.validate_state
+
+        def reject_proposed(document: StateDocument) -> None:
+            original_validate(document)
+            if document.tasks[0].status is TaskStatus.ACTIVE:
+                raise StateValidationError("synthetic proposed-state rejection")
+
+        with mock.patch(
+            "evidline.cli.state.validate_state",
+            side_effect=reject_proposed,
+        ):
+            code, stdout, stderr = self.run_cli(
+                "approve",
+                "task-1",
+                "--root",
+                str(self.root),
+                "--scope",
+                "src",
+                stdin_text="task-1\n",
+                interactive=True,
+            )
+        self.assertEqual(code, 6)
+        self.assertEqual(stdout, "")
+        self.assertIn("approval transition is invalid", stderr)
+        self.assertEqual(state_path.read_bytes(), before)
+
+    def test_approve_does_not_convert_related_ids_to_acknowledgements(self) -> None:
+        document = self.approval_state()
+        task = replace(document.tasks[0], related_ids=("inv-1",))
+        self.write_state(replace(document, tasks=(task,)))
+        with mock.patch("evidline.cli.datetime") as clock:
+            clock.now.return_value.isoformat.return_value = "2026-08-17T12:00:00+00:00"
+            code, _, stderr = self.run_cli(
+                "approve",
+                "task-1",
+                "--root",
+                str(self.root),
+                "--scope",
+                "src",
+                stdin_text="task-1\n",
+                interactive=True,
+            )
+        self.assertEqual((code, stderr), (0, ""))
+        approved = load_state(self.root).tasks[0]
+        self.assertEqual(approved.related_ids, ("inv-1",))
+        self.assertEqual(approved.acknowledged_invariant_ids, ())
+
+    def test_approve_explicitly_restamps_only_foreign_empty_scopes(self) -> None:
+        document = self.approval_state()
+        foreign = (
+            ScopePathSemantics.CASE_SENSITIVE
+            if host_scope_semantics() is ScopePathSemantics.CASE_FOLDED
+            else ScopePathSemantics.CASE_FOLDED
+        )
+        document = replace(document, scope_semantics=foreign)
+        self.write_state(document)
+        with mock.patch("evidline.cli.datetime") as clock:
+            clock.now.return_value.isoformat.return_value = "2026-08-17T12:00:00+00:00"
+            code, stdout, stderr = self.run_cli(
+                "approve",
+                "task-1",
+                "--root",
+                str(self.root),
+                "--scope",
+                "src",
+                stdin_text="task-1\n",
+                interactive=True,
+            )
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertIn(
+            f"scope_semantics: {foreign.value} -> {host_scope_semantics().value}",
+            stdout,
+        )
+        self.assertIs(load_state(self.root).scope_semantics, host_scope_semantics())
 
     def check(self, risk: str, *extra: str, target: str = "src/app.py"):
         return self.run_cli(

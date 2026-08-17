@@ -28,8 +28,8 @@
       "over_budget": false,
       "policy_vs_failure_confusion_count": 0,
       "required_facts_restored": 11,
-      "scenarios_matched": 47,
-      "scenarios_total": 47,
+      "scenarios_matched": 62,
+      "scenarios_total": 62,
       "session_payload_identical": true,
       "stale_reuse_count": 0,
       "stale_revalidation_count": 2,
@@ -55,6 +55,18 @@
       "core.denied_intent",
       "core.derived_outside_authorized_scope",
       "core.untrusted_authorization_channel",
+      "core.governed_scope_authorized_allow",
+      "core.governed_block_unacknowledged",
+      "core.governed_block_acknowledged",
+      "core.governed_advise_relevant",
+      "core.governed_superseded_relevant",
+      "core.governed_multiple_block",
+      "core.governed_mixed_acknowledgement",
+      "core.governed_outside_scope",
+      "core.governed_untrusted_acknowledgement",
+      "core.governed_acknowledgement_does_not_suppress_asserted_conflict",
+      "core.malformed_governed_scope",
+      "core.incompatible_scope_semantics",
       "context.session_continuity",
       "context.stale_claims",
       "context.failed_claim",
@@ -67,10 +79,12 @@
       "codex.session_sources",
       "claude.safe_covered_tools",
       "claude.authorized_normal_mutation",
+      "claude.governed_block_unacknowledged",
       "claude.protected_mutation",
       "claude.uncovered_tool",
       "codex.safe_apply_patch",
       "codex.authorized_normal_apply_patch",
+      "codex.governed_block_unacknowledged",
       "codex.protected_apply_patch",
       "codex.mixed_apply_patch",
       "codex.malformed_patches",
@@ -83,6 +97,7 @@
       "cross.session_context_parity",
       "cross.safe_target_asymmetry",
       "cross.protected_target_parity",
+      "cross.governed_block_parity",
       "cross.failure_parity"
     ],
     "uncovered_surfaces": [
@@ -103,8 +118,8 @@
       },
       {
         "id": "VAB-2",
-        "status": "OPEN",
-        "title": "automatic unsupported-architecture-mutation blocking unreachable"
+        "status": "IMPLEMENTED_PENDING_REVIEW",
+        "title": "target-to-governed-invariant binding and acknowledgement enforcement"
       }
     ]
   },
