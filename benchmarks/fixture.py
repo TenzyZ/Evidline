@@ -414,6 +414,11 @@ class BenchmarkFixture:
     def target(self, relative: str) -> Path:
         return self.assert_sandbox_path(self.root / relative)
 
+    def fresh_authoring_root(self, name: str) -> Path:
+        root = self.assert_sandbox_path(self.sandbox / "authoring" / name)
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
     def write_state(self, state: StateDocument | None = None) -> None:
         document = self.state if state is None else state
         state_path = self.target(".evidline/state.json")

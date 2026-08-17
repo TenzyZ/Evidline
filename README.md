@@ -94,7 +94,8 @@ Today Evidline refuses to persist `VERIFIED`, because the reproducible verifier 
 | Built | Path safety foundation | [src/evidline/paths.py](src/evidline/paths.py) |
 | Built | Typed and validated state foundation | [src/evidline/state.py](src/evidline/state.py) |
 | Built | State validation rules | [src/evidline/state.py](src/evidline/state.py) |
-| Built | CLI with `init`, `status`, `context`, and `check-mutation` | [src/evidline/cli.py](src/evidline/cli.py) |
+| Built | CLI with `init`, `add-invariant`, `add-task`, `status`, `context`, and `check-mutation` | [src/evidline/cli.py](src/evidline/cli.py) |
+| Built | Deterministic Task and Invariant authoring without authorization | [ADR-0021](docs/adr/ADR-0021-supported-authoring-surface.md) |
 | Built | `.evidline/` initialization | [src/evidline/state.py](src/evidline/state.py) |
 | Built | Deterministic project status | [src/evidline/status.py](src/evidline/status.py) |
 | Built | Context compiler | [src/evidline/context.py](src/evidline/context.py) |
@@ -117,6 +118,9 @@ A local CLI flow is:
 
 ```text
 evidline init
+→ evidline add-invariant --id inv-arch --description "Architecture boundary" --enforcement BLOCK --governed-scope src
+→ evidline add-task --id task-work --description "Bounded implementation work"
+→ evidline approve task-work --scope src --acknowledge inv-arch
 → evidline status
 → evidline context
 → evidline check-mutation --target src/app.py --risk LOW --intent REQUESTED

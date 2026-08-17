@@ -65,6 +65,16 @@ verification, automatic state-load verification, context integration, mutation
 integration, live Claude enforcement, live Codex enforcement, hooks, persisted
 `VERIFIED`, TOCTOU protection, or hardlink protection.
 
+## Phase 10 authoring coverage
+
+The three `authoring.*` scenarios prove that supported Task creation exists and
+the new Task remains unapproved and untrusted; supported ACTIVE Invariant
+creation exists; governed scope persists with existing semantics; and empty
+scope differs from explicit repository root.
+
+They do not prove live hook dispatch, live context injection, live mutation
+denial, installed harness integration, human acceptance, or VAB-6 closure.
+
 ## V1 blockers
 
 `VAB-1` — **trusted scoped adapter ALLOW implemented and reviewed** — is
@@ -98,7 +108,8 @@ and persisted VERIFIED stays prohibited** — is `CLOSED`.
 
 `VAB-5` — **doctor / validation capability absent** — is `OPEN`.
 
-`VAB-6` — **supported Task and Invariant authoring surface absent** — is `OPEN`.
+`VAB-6` — **supported Task and Invariant authoring implementation exists** — is
+`OPEN` pending the accepted closure workflow.
 
 `VAB-7` — **live harness evidence absent; installed dispatch, injection, and
 denial unattempted** — is `OPEN`.

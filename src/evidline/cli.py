@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
 import os
+from pathlib import Path
 import sys
 
 from evidline import __version__
@@ -103,6 +104,33 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="INVARIANT_ID",
     )
     approve_parser.add_argument("--root", metavar="PATH")
+
+    add_task_parser = subparsers.add_parser(
+        "add-task", help="create an unapproved Task"
+    )
+    add_task_parser.add_argument("--id", required=True, metavar="TASK_ID")
+    add_task_parser.add_argument("--description", required=True, metavar="TEXT")
+    add_task_parser.add_argument("--related-id", action="append", metavar="RECORD_ID")
+    add_task_parser.add_argument("--root", metavar="PATH")
+
+    add_invariant_parser = subparsers.add_parser(
+        "add-invariant", help="create an active Invariant"
+    )
+    add_invariant_parser.add_argument("--id", required=True, metavar="INVARIANT_ID")
+    add_invariant_parser.add_argument(
+        "--description", required=True, metavar="TEXT"
+    )
+    add_invariant_parser.add_argument(
+        "--enforcement",
+        required=True,
+        choices=[item.value for item in state.InvariantEnforcement],
+    )
+    add_invariant_parser.add_argument(
+        "--governed-scope",
+        action="append",
+        metavar="ROOT_RELATIVE_PATH",
+    )
+    add_invariant_parser.add_argument("--root", metavar="PATH")
 
     context_parser = subparsers.add_parser(
         "context", help="compile bounded context from local state"
@@ -232,6 +260,201 @@ def _run_status(args: argparse.Namespace) -> int:
         else status.render_status_text
     )
     sys.stdout.write(renderer(report))
+    return 0
+
+
+def _discover_root_or_error(root_argument: str | None) -> Path | None:
+    root = paths.discover_project_root(root_argument or os.curdir)
+    if root is None:
+        print("evidline: state not initialized: project root not found", file=sys.stderr)
+    return root
+
+
+def _load_current_state_or_error(
+    root: Path,
+) -> tuple[state.StateDocument | None, int]:
+    try:
+        return state.load_state(root), 0
+    except state.StateNotInitializedError as exc:
+        print(f"evidline: state not initialized: {exc}", file=sys.stderr)
+        return None, _EXIT_NOT_INITIALIZED
+    except state.StateValidationError as exc:
+        print(f"evidline: invalid or unsupported state: {exc}", file=sys.stderr)
+        return None, _EXIT_INVALID_STATE
+    except state.StateIOError as exc:
+        print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+        return None, _EXIT_STATE_IO
+
+
+def _commit_proposed_state(
+    root: Path,
+    current: state.StateDocument,
+    proposed: state.StateDocument,
+) -> tuple[state.StateDocument | None, int]:
+    try:
+        state.validate_state(proposed)
+    except state.StateValidationError as exc:
+        print(f"evidline: invalid proposed state: {exc}", file=sys.stderr)
+        return None, _EXIT_INVALID_INPUT
+    try:
+        return state.write_state(root, proposed, expected_revision=current.revision), 0
+    except state.StateConflictError as exc:
+        print(f"evidline: state write conflict: {exc}", file=sys.stderr)
+        return None, _EXIT_STATE_IO
+    except state.StateValidationError as exc:
+        print(f"evidline: invalid proposed state: {exc}", file=sys.stderr)
+        return None, _EXIT_INVALID_INPUT
+    except state.StateIOError as exc:
+        print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+        return None, _EXIT_STATE_IO
+
+
+def _print_scope_lines(label: str, values: tuple[str, ...]) -> None:
+    print(f"{label}:")
+    if not values:
+        print("- (none)")
+        return
+    for value in values:
+        print(f"- {value}")
+
+
+def _run_add_task(args: argparse.Namespace) -> int:
+    related_ids = tuple(args.related_id or ())
+    if any(not record_id for record_id in related_ids):
+        print("evidline: invalid related id: id must be non-empty", file=sys.stderr)
+        return _EXIT_INVALID_INPUT
+    if len(set(related_ids)) != len(related_ids):
+        print("evidline: invalid related id: duplicate record id", file=sys.stderr)
+        return _EXIT_INVALID_INPUT
+
+    root = _discover_root_or_error(args.root)
+    if root is None:
+        return _EXIT_NOT_INITIALIZED
+    current, error_code = _load_current_state_or_error(root)
+    if current is None:
+        return error_code
+    all_record_ids = {
+        item.id
+        for records in (
+            current.invariants,
+            current.decisions,
+            current.tasks,
+            current.claims,
+            current.evidence,
+        )
+        for item in records
+    }
+    if args.id in all_record_ids:
+        print(f"evidline: duplicate record id: {args.id}", file=sys.stderr)
+        return _EXIT_INVALID_INPUT
+
+    record = state.Task(
+        id=args.id,
+        description=args.description,
+        status=state.TaskStatus.DRAFT,
+        intent=state.Intent.PROPOSED,
+        execution=state.Execution.NOT_RUN,
+        related_ids=related_ids,
+    )
+    updated, error_code = _commit_proposed_state(
+        root,
+        current,
+        replace(current, tasks=current.tasks + (record,)),
+    )
+    if updated is None:
+        return error_code
+
+    print(f"created: {record.id}")
+    print(f"state_revision: {updated.revision}")
+    print(f"status: {record.status.value}")
+    print(f"intent: {record.intent.value}")
+    print(f"execution: {record.execution.value}")
+    _print_scope_lines("related_ids", record.related_ids)
+    _print_scope_lines("authorized_scope", record.authorized_scope)
+    _print_scope_lines(
+        "acknowledged_invariant_ids", record.acknowledged_invariant_ids
+    )
+    print("approval: (none)")
+    print(f"next: evidline approve {record.id} --scope ROOT_RELATIVE_PATH")
+    return 0
+
+
+def _run_add_invariant(args: argparse.Namespace) -> int:
+    try:
+        governed_scope = tuple(
+            paths.normalize_root_relative_scope(value)
+            for value in (args.governed_scope or ())
+        )
+    except ValueError as exc:
+        print(f"evidline: invalid governed scope: {exc}", file=sys.stderr)
+        return _EXIT_INVALID_INPUT
+    if len(set(governed_scope)) != len(governed_scope):
+        print(
+            "evidline: invalid governed scope: duplicate normalized scope",
+            file=sys.stderr,
+        )
+        return _EXIT_INVALID_INPUT
+
+    root = _discover_root_or_error(args.root)
+    if root is None:
+        return _EXIT_NOT_INITIALIZED
+    current, error_code = _load_current_state_or_error(root)
+    if current is None:
+        return error_code
+    if (
+        governed_scope
+        and current.scope_semantics is not paths.host_scope_semantics()
+    ):
+        print(
+            "evidline: invalid governed scope: cannot author native scope under "
+            "foreign scope_semantics; use the interactive approve ceremony to restamp",
+            file=sys.stderr,
+        )
+        return _EXIT_INVALID_INPUT
+    all_record_ids = {
+        item.id
+        for records in (
+            current.invariants,
+            current.decisions,
+            current.tasks,
+            current.claims,
+            current.evidence,
+        )
+        for item in records
+    }
+    if args.id in all_record_ids:
+        print(f"evidline: duplicate record id: {args.id}", file=sys.stderr)
+        return _EXIT_INVALID_INPUT
+
+    record = state.Invariant(
+        id=args.id,
+        description=args.description,
+        enforcement=state.InvariantEnforcement(args.enforcement),
+        status=state.InvariantStatus.ACTIVE,
+        governed_scope=governed_scope,
+    )
+    updated, error_code = _commit_proposed_state(
+        root,
+        current,
+        replace(current, invariants=current.invariants + (record,)),
+    )
+    if updated is None:
+        return error_code
+
+    scope_meaning = (
+        "NO_TARGET_BINDING"
+        if not record.governed_scope
+        else "WHOLE_REPOSITORY"
+        if "." in record.governed_scope
+        else "GOVERNED_PREFIXES"
+    )
+    print(f"created: {record.id}")
+    print(f"state_revision: {updated.revision}")
+    print(f"enforcement: {record.enforcement.value}")
+    print(f"status: {record.status.value}")
+    _print_scope_lines("governed_scope", record.governed_scope)
+    print(f"governed_scope_meaning: {scope_meaning}")
+    print("approval: (none)")
     return 0
 
 
@@ -534,6 +757,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_status(args)
     if args.command == "approve":
         return _run_approve(args)
+    if args.command == "add-task":
+        return _run_add_task(args)
+    if args.command == "add-invariant":
+        return _run_add_invariant(args)
     if args.command == "context":
         return _run_context(args)
     if args.command == "check-mutation":
