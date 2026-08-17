@@ -86,12 +86,12 @@ policy evaluation. The benchmark also proves that acknowledgement does not
 suppress caller-asserted invariant conflicts and that both existing adapters
 transport the core BLOCK as denial.
 
-VAB-1 and VAB-2 closure does not invalidate the remaining V1 limitations below.
+VAB-1, VAB-2, and VAB-3 closure does not invalidate the remaining V1 limitations below.
 Because they are closed while other acceptance requirements remain unsatisfied,
 overall `v1_acceptance` remains `BLOCKED`.
 
-`VAB-3` — **reproducible evidence verifier absent; persisted claims cannot reach
-VERIFIED** — is `OPEN`.
+`VAB-3` — **reproducible evidence verifier implemented; verdicts remain ephemeral
+and persisted VERIFIED stays prohibited** — is `CLOSED`.
 
 `VAB-4` — **verified handoff absent; handoff profile is explicitly unverified**
 — is `OPEN`.

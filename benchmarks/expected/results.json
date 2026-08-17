@@ -133,8 +133,8 @@
       },
       {
         "id": "VAB-3",
-        "status": "OPEN",
-        "title": "reproducible evidence verifier absent; persisted claims cannot reach VERIFIED"
+        "status": "CLOSED",
+        "title": "reproducible evidence verifier implemented; verdicts remain ephemeral and persisted VERIFIED stays prohibited"
       },
       {
         "id": "VAB-4",
