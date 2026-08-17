@@ -31,10 +31,10 @@ _TARGET_FIELD: Final = MappingProxyType(
 
 # PROPOSED is mandatory: PreToolUse proves only that Claude proposed a tool
 # call, not that a human requested or authorized the mutation. ADR-0009 forbids
-# agent self-authorization, and schema version 1 cannot bind authority to a
-# mutation target. The adapter must not promote this to REQUESTED or AUTHORIZED.
+# agent self-authorization. The core may derive scoped authority from current
+# trusted state; the adapter must not promote this to REQUESTED or AUTHORIZED.
 # NORMAL is a required declared non-assessment, not a risk classification:
-# schema version 1 has no deterministic per-mutation risk source. In particular,
+# persisted state has no deterministic per-mutation risk source. In particular,
 # no filename, location, tool, content, prompt, transcript, or permission mode
 # may be used to infer risk. NORMAL also surfaces NO_ACTIVE_TASK where relevant.
 _REQUEST: Final = MutationRequest(

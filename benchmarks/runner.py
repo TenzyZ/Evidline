@@ -41,7 +41,13 @@ from evidline.mutation import (
     MutationRequest,
     MutationRisk,
 )
-from evidline.state import Intent
+from evidline.state import (
+    Intent,
+    StateDocument,
+    TaskStatus,
+    TRUSTED_APPROVAL_CHANNEL,
+    TRUSTED_ASSERTED_ACTOR,
+)
 
 
 BENCHMARK_SCHEMA_VERSION: Final = 1
@@ -101,6 +107,30 @@ def _basic_decision(decision: MutationDecision) -> dict[str, Any]:
         "outcome": decision.outcome.value,
         "reasons": [reason.value for reason in decision.reasons],
     }
+
+
+def _scoped_authority_state(
+    fixture: BenchmarkFixture,
+    *,
+    authorized_scope: tuple[str, ...] = ("src",),
+    trusted: bool = True,
+) -> StateDocument:
+    tasks = tuple(
+        replace(
+            task,
+            authorized_scope=authorized_scope,
+            approval_channel=(
+                TRUSTED_APPROVAL_CHANNEL if trusted else "benchmark-untrusted"
+            ),
+            asserted_actor=(
+                TRUSTED_ASSERTED_ACTOR if trusted else "benchmark-operator"
+            ),
+        )
+        if task.status is TaskStatus.ACTIVE
+        else task
+        for task in fixture.state.tasks
+    )
+    return replace(fixture.state, tasks=tasks)
 
 
 def _invoke(
@@ -290,7 +320,7 @@ def _scenario_core(fixture: BenchmarkFixture, scenario_id: str) -> dict[str, Any
                 fixture,
                 target,
                 _request(),
-                state=replace(fixture.state, schema_version=2),
+                state=replace(fixture.state, schema_version=3),
             )
         except MutationInputError as error:
             return {"exception": type(error).__name__, "message": str(error)}
@@ -299,6 +329,25 @@ def _scenario_core(fixture: BenchmarkFixture, scenario_id: str) -> dict[str, Any
         return _basic_decision(
             _decision(fixture, target, _request(intent=Intent.DENIED))
         )
+    if scenario_id in (
+        "core.derived_outside_authorized_scope",
+        "core.untrusted_authorization_channel",
+    ):
+        outside_scope = scenario_id == "core.derived_outside_authorized_scope"
+        selected_state = _scoped_authority_state(
+            fixture,
+            authorized_scope=("docs",) if outside_scope else ("src",),
+            trusted=outside_scope,
+        )
+        decision = _decision(
+            fixture,
+            target,
+            _request(intent=Intent.PROPOSED),
+            state=selected_state,
+        )
+        result = _basic_decision(decision)
+        result["authorizing_task_id"] = decision.authorizing_task_id
+        return result
     raise KeyError(scenario_id)
 
 
@@ -426,6 +475,27 @@ def _scenario_claude(fixture: BenchmarkFixture, scenario_id: str) -> dict[str, A
             reason = str(output["permissionDecisionReason"])
             result[tool] = [code, output["permissionDecision"], _policy_from_reason(reason)]
         return result
+    if scenario_id == "claude.authorized_normal_mutation":
+        selected_state = _scoped_authority_state(fixture)
+        decision = _decision(
+            fixture,
+            fixture.target("src/app.py"),
+            _request(intent=Intent.PROPOSED),
+            state=selected_state,
+        )
+        fixture.write_state(selected_state)
+        try:
+            code, stdout, stderr, output = _claude_result(
+                fixture, "Edit", fixture.target("src/app.py")
+            )
+        finally:
+            fixture.write_state()
+        return {
+            "core_outcome": decision.outcome.value,
+            "authorizing_task_id": decision.authorizing_task_id,
+            "exit": code,
+            "adapter_silent": stdout == "" and stderr == "" and output is None,
+        }
     if scenario_id == "claude.protected_mutation":
         code, _, _, output = _claude_result(fixture, "Edit", fixture.target(".git/config"))
         reason = str(output["permissionDecisionReason"])
@@ -453,6 +523,25 @@ def _scenario_codex(fixture: BenchmarkFixture, scenario_id: str) -> dict[str, An
         reason = str(output["permissionDecisionReason"])
         policy = "ASK" if scenario_id == "codex.safe_apply_patch" else "BLOCK"
         return {"exit": code, "permission": output["permissionDecision"], "policy": _policy_from_reason(reason), "prefix": reason.startswith(f"evidline {policy}:")}
+    if scenario_id == "codex.authorized_normal_apply_patch":
+        selected_state = _scoped_authority_state(fixture)
+        decision = _decision(
+            fixture,
+            fixture.target("src/app.py"),
+            _request(intent=Intent.PROPOSED),
+            state=selected_state,
+        )
+        fixture.write_state(selected_state)
+        try:
+            code, stdout, stderr, output = _codex_result(fixture, safe_patch)
+        finally:
+            fixture.write_state()
+        return {
+            "core_outcome": decision.outcome.value,
+            "authorizing_task_id": decision.authorizing_task_id,
+            "exit": code,
+            "adapter_silent": stdout == "" and stderr == "" and output is None,
+        }
     if scenario_id == "codex.mixed_apply_patch":
         mixed = _patch(
             "*** Update File: src/app.py",
@@ -529,7 +618,7 @@ def _scenario_adapters(fixture: BenchmarkFixture, scenario_id: str) -> dict[str,
             claude_run = _claude_result(fixture, "Edit", fixture.target("src/app.py"))
         with mock.patch.object(codex.mutation, "evaluate_and_decide", return_value=decision):
             codex_run = _codex_result(fixture, safe_patch)
-        return {"classification": "SYNTHETIC_ONLY_UNREACHABLE_IN_PRODUCTION", "claude_silent": claude_run[0] == 0 and claude_run[1] == "", "codex_silent": codex_run[0] == 0 and codex_run[1] == ""}
+        return {"classification": "SYNTHETIC_MAPPING_ONLY", "claude_silent": claude_run[0] == 0 and claude_run[1] == "", "codex_silent": codex_run[0] == 0 and codex_run[1] == ""}
     if scenario_id == "adapters.wrong_hook_event":
         claude_payload = _claude_payload(fixture, "Edit", fixture.target("src/app.py"))
         codex_payload = _codex_payload(fixture, safe_patch)

@@ -126,7 +126,7 @@ def build_state() -> StateDocument:
         ),
     )
     state = StateDocument(
-        schema_version=1,
+        schema_version=2,
         revision=7,
         project=Project(
             name="Evidline synthetic benchmark",

@@ -151,11 +151,12 @@ fail the hook while the tool call continues. `PermissionRequest` is not a
 universal substitute because it runs only when Codex independently decides to
 request approval.
 
-Because every real covered request is correctly represented as `PROPOSED`, the
-existing mutation core escalates it to at least ASK. Therefore, if this adapter
-were activated under the current architecture, covered `apply_patch` calls
-would be denied rather than interactively approved. Phase 6 is a deterministic
-transport implementation, not a usable live authorization workflow.
+Every real covered request remains `PROPOSED`. The core may derive bounded
+authority from a trusted, ACTIVE Task whose `authorized_scope` contains the
+canonical target; an otherwise permitted NORMAL target can then reach ALLOW and
+the adapter stays silent. Without that exact binding, the request reaches at
+least ASK and Codex transport denies it. This does not make the adapter a live
+authorization workflow or a complete shell-security boundary.
 
 ## Runtime boundary
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import io
 import json
 import os
@@ -28,6 +29,8 @@ from evidline.state import (
     StateIOError,
     Task,
     TaskStatus,
+    TRUSTED_APPROVAL_CHANNEL,
+    TRUSTED_ASSERTED_ACTOR,
     Verification,
     load_state,
     serialize_state,
@@ -40,6 +43,11 @@ NOTICE = (
 )
 
 
+class TTYStringIO(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
 def high_state() -> StateDocument:
     evidence = Evidence(
         id="evidence-1",
@@ -48,7 +56,7 @@ def high_state() -> StateDocument:
         execution=Execution.EXECUTED,
     )
     return StateDocument(
-        schema_version=1,
+        schema_version=2,
         revision=0,
         project=Project("project", "Phase 4", (), 8000),
         invariants=(
@@ -102,11 +110,21 @@ class CliTests(unittest.TestCase):
         self.root = Path(self.temporary.name) / "project"
         self.root.mkdir()
 
-    def run_cli(self, *args: str) -> tuple[int, str, str]:
-        stdout = io.StringIO()
+    def run_cli(
+        self,
+        *args: str,
+        stdin_text: str = "",
+        interactive: bool = False,
+    ) -> tuple[int, str, str]:
+        stdin = TTYStringIO(stdin_text) if interactive else io.StringIO(stdin_text)
+        stdout = TTYStringIO() if interactive else io.StringIO()
         stderr = io.StringIO()
         code = 0
-        with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+        with (
+            mock.patch("sys.stdin", stdin),
+            mock.patch("sys.stdout", stdout),
+            mock.patch("sys.stderr", stderr),
+        ):
             with mock.patch("os.curdir", str(self.root)):
                 try:
                     code = main(args)
@@ -126,6 +144,19 @@ class CliTests(unittest.TestCase):
         state_path = directory / "state.json"
         state_path.write_text(serialize_state(document), encoding="utf-8")
         return state_path
+
+    def approval_state(self) -> StateDocument:
+        document = high_state()
+        draft = replace(
+            document.tasks[0],
+            status=TaskStatus.DRAFT,
+            intent=Intent.PROPOSED,
+            authorized_scope=(),
+            approved_at=None,
+            approval_channel=None,
+            asserted_actor=None,
+        )
+        return replace(document, tasks=(draft,))
 
     def test_bare_cli_is_usage_error_with_help_on_stderr(self) -> None:
         code, stdout, stderr = self.run_cli()
@@ -277,7 +308,7 @@ class CliTests(unittest.TestCase):
                     f"root: {self.root.resolve()}",
                     f"state: {state_path.resolve()}",
                     "status_schema_version: 1",
-                    "state_schema_version: 1",
+                    "state_schema_version: 2",
                     "state_revision: 0",
                     "project: project",
                     "default_budget_chars: 8000",
@@ -356,6 +387,122 @@ class CliTests(unittest.TestCase):
         self.assertEqual(json_result[0], 0)
         self.assertEqual(state_path.read_bytes(), before)
         self.assertEqual([item.name for item in state_path.parent.iterdir()], listing)
+
+    def test_approve_interactively_performs_only_bounded_task_transition(self) -> None:
+        before = self.approval_state()
+        state_path = self.write_state(before)
+        with mock.patch("evidline.cli.datetime") as clock:
+            clock.now.return_value.isoformat.return_value = "2026-08-17T12:00:00+00:00"
+            code, stdout, stderr = self.run_cli(
+                "approve",
+                "task-1",
+                "--root",
+                str(self.root),
+                "--scope",
+                r"src\package/",
+                "--scope",
+                "docs",
+                stdin_text="task-1\n",
+                interactive=True,
+            )
+        normalized_package_scope = (
+            "src/package" if os.name == "nt" else r"src\package"
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertIn(
+            f"authorized_scope:\n- {normalized_package_scope}\n- docs\n", stdout
+        )
+        self.assertIn("defense-in-depth, not proof of human identity", stdout)
+        updated = load_state(self.root)
+        task = updated.tasks[0]
+        self.assertEqual(task.status, TaskStatus.ACTIVE)
+        self.assertEqual(task.intent, Intent.AUTHORIZED)
+        self.assertEqual(task.authorized_scope, (normalized_package_scope, "docs"))
+        self.assertEqual(task.approval_channel, TRUSTED_APPROVAL_CHANNEL)
+        self.assertEqual(task.asserted_actor, TRUSTED_ASSERTED_ACTOR)
+        self.assertEqual(task.approved_at, "2026-08-17T12:00:00+00:00")
+        self.assertEqual(updated.revision, before.revision + 1)
+        self.assertEqual(updated.project, before.project)
+        self.assertEqual(updated.invariants, before.invariants)
+        self.assertEqual(updated.decisions, before.decisions)
+        self.assertEqual(updated.claims, before.claims)
+        self.assertEqual(updated.evidence, before.evidence)
+        self.assertEqual(updated.counters, before.counters)
+        self.assertTrue(state_path.is_file())
+
+    def test_approve_cancellation_and_noninteractive_refusal_do_not_mutate(self) -> None:
+        state_path = self.write_state(self.approval_state())
+        before = state_path.read_bytes()
+        cancelled = self.run_cli(
+            "approve",
+            "task-1",
+            "--root",
+            str(self.root),
+            "--scope",
+            "src",
+            stdin_text="cancel\n",
+            interactive=True,
+        )
+        self.assertEqual(cancelled[0], 6)
+        self.assertIn("state unchanged", cancelled[1])
+        self.assertEqual(state_path.read_bytes(), before)
+
+        noninteractive = self.run_cli(
+            "approve",
+            "task-1",
+            "--root",
+            str(self.root),
+            "--scope",
+            "src",
+            stdin_text="task-1\n",
+        )
+        self.assertEqual(noninteractive[0], 6)
+        self.assertIn("requires interactive TTY", noninteractive[2])
+        self.assertEqual(state_path.read_bytes(), before)
+
+    def test_approve_rejects_unsafe_scope_before_state_write(self) -> None:
+        state_path = self.write_state(self.approval_state())
+        before = state_path.read_bytes()
+        for scope in (
+            "C:/outside",
+            "../outside",
+            "*.py",
+            "!src",
+            "src\nspoof",
+        ):
+            with self.subTest(scope=scope):
+                code, stdout, stderr = self.run_cli(
+                    "approve",
+                    "task-1",
+                    "--root",
+                    str(self.root),
+                    "--scope",
+                    scope,
+                    stdin_text="task-1\n",
+                    interactive=True,
+                )
+                self.assertEqual(code, 6)
+                self.assertEqual(stdout, "")
+                self.assertIn("invalid approval scope", stderr)
+                self.assertEqual(state_path.read_bytes(), before)
+
+    def test_approve_whole_repository_scope_is_explicit_and_visible(self) -> None:
+        self.write_state(self.approval_state())
+        with mock.patch("evidline.cli.datetime") as clock:
+            clock.now.return_value.isoformat.return_value = "2026-08-17T12:00:00+00:00"
+            code, stdout, stderr = self.run_cli(
+                "approve",
+                "task-1",
+                "--root",
+                str(self.root),
+                "--scope",
+                ".",
+                stdin_text="task-1\n",
+                interactive=True,
+            )
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertIn("authorized_scope:\n- .\n", stdout)
+        self.assertEqual(load_state(self.root).tasks[0].authorized_scope, (".",))
 
     def check(self, risk: str, *extra: str, target: str = "src/app.py"):
         return self.run_cli(

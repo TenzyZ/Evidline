@@ -42,6 +42,8 @@ from evidline.state import (
     StateValidationError,
     Task,
     TaskStatus,
+    TRUSTED_APPROVAL_CHANNEL,
+    TRUSTED_ASSERTED_ACTOR,
     Verification,
     serialize_state,
 )
@@ -59,7 +61,7 @@ def make_state(
     invariants: tuple[Invariant, ...] = (),
 ) -> StateDocument:
     return StateDocument(
-        schema_version=1,
+        schema_version=2,
         revision=0,
         project=Project(
             name="Evidline",
@@ -76,15 +78,37 @@ def make_state(
     )
 
 
-def make_task(status: TaskStatus = TaskStatus.ACTIVE, task_id: str = "task-1") -> Task:
+def make_task(
+    status: TaskStatus = TaskStatus.ACTIVE,
+    task_id: str = "task-1",
+    *,
+    authorized_scope: tuple[str, ...] = (),
+    approval_channel: str = APPROVAL_CHANNEL,
+    asserted_actor: str | None = None,
+) -> Task:
     return Task(
         id=task_id,
         description="Active work",
         status=status,
         intent=Intent.AUTHORIZED,
         execution=Execution.EXECUTED,
+        authorized_scope=authorized_scope,
         approved_at=APPROVED_AT,
-        approval_channel=APPROVAL_CHANNEL,
+        approval_channel=approval_channel,
+        asserted_actor=asserted_actor,
+    )
+
+
+def make_trusted_task(
+    status: TaskStatus = TaskStatus.ACTIVE,
+    *,
+    authorized_scope: tuple[str, ...] = ("src",),
+) -> Task:
+    return make_task(
+        status,
+        authorized_scope=authorized_scope,
+        approval_channel=TRUSTED_APPROVAL_CHANNEL,
+        asserted_actor=TRUSTED_ASSERTED_ACTOR,
     )
 
 
@@ -249,6 +273,195 @@ class NormalRiskTests(unittest.TestCase):
         )
         self.assertEqual(decision.outcome, MutationOutcome.BLOCK)
         self.assertIn(MutationReason.INSUFFICIENT_AUTHORIZATION, decision.reasons)
+
+
+class DerivedAuthorizationTests(unittest.TestCase):
+    def decide(
+        self,
+        *,
+        task: Task | None = None,
+        target: str = "src/file.txt",
+        request: MutationRequest | None = None,
+        evaluation: PathEvaluation | None = None,
+        invariants: tuple[Invariant, ...] = (),
+    ) -> MutationDecision:
+        return decide_mutation(
+            request or make_request(Intent.PROPOSED, MutationRisk.NORMAL),
+            evaluation or safe_eval(target),
+            make_state(tasks=(() if task is None else (task,)), invariants=invariants),
+        )
+
+    def test_matching_trusted_active_task_derives_authority(self) -> None:
+        decision = self.decide(task=make_trusted_task())
+        self.assertEqual(decision.outcome, MutationOutcome.ALLOW)
+        self.assertEqual(decision.reasons, ())
+        self.assertEqual(decision.authorizing_task_id, "task-1")
+
+    def test_outside_or_empty_scope_does_not_derive(self) -> None:
+        for task in (
+            make_trusted_task(authorized_scope=("docs",)),
+            make_trusted_task(authorized_scope=()),
+        ):
+            with self.subTest(scope=task.authorized_scope):
+                decision = self.decide(task=task)
+                self.assertEqual(decision.outcome, MutationOutcome.ASK)
+                self.assertIn(
+                    MutationReason.REQUEST_INTENT_INSUFFICIENT, decision.reasons
+                )
+                self.assertIsNone(decision.authorizing_task_id)
+
+    def test_untrusted_channel_or_actor_does_not_derive(self) -> None:
+        for task in (
+            make_task(
+                authorized_scope=("src",),
+                approval_channel="caller-asserted",
+                asserted_actor=TRUSTED_ASSERTED_ACTOR,
+            ),
+            make_task(
+                authorized_scope=("src",),
+                approval_channel=TRUSTED_APPROVAL_CHANNEL,
+                asserted_actor="agent",
+            ),
+        ):
+            with self.subTest(channel=task.approval_channel, actor=task.asserted_actor):
+                decision = self.decide(task=task)
+                self.assertEqual(decision.outcome, MutationOutcome.ASK)
+                self.assertIsNone(decision.authorizing_task_id)
+
+    def test_non_active_task_does_not_derive(self) -> None:
+        for status in (TaskStatus.DRAFT, TaskStatus.DONE):
+            with self.subTest(status=status):
+                decision = self.decide(task=make_trusted_task(status))
+                self.assertNotEqual(decision.outcome, MutationOutcome.ALLOW)
+                self.assertIsNone(decision.authorizing_task_id)
+
+    def test_denied_intent_still_blocks(self) -> None:
+        decision = self.decide(
+            task=make_trusted_task(),
+            request=make_request(Intent.DENIED, MutationRisk.NORMAL),
+        )
+        self.assertEqual(decision.outcome, MutationOutcome.BLOCK)
+        self.assertIn(MutationReason.REQUEST_INTENT_DENIED, decision.reasons)
+        self.assertIsNone(decision.authorizing_task_id)
+
+    def test_caller_authorized_intent_is_not_recorded_as_derived_authority(self) -> None:
+        decision = self.decide(
+            task=make_trusted_task(),
+            request=make_request(Intent.AUTHORIZED, MutationRisk.NORMAL),
+        )
+        self.assertEqual(decision.outcome, MutationOutcome.ALLOW)
+        self.assertIsNone(decision.authorizing_task_id)
+
+    def test_derived_authority_does_not_validate_bad_caller_authorizing_ids(self) -> None:
+        decision = self.decide(
+            task=make_trusted_task(),
+            request=make_request(
+                Intent.PROPOSED,
+                MutationRisk.NORMAL,
+                authorizing_ids=("dec-missing",),
+            ),
+        )
+        self.assertEqual(decision.outcome, MutationOutcome.BLOCK)
+        self.assertIn(MutationReason.INSUFFICIENT_AUTHORIZATION, decision.reasons)
+        self.assertEqual(decision.authorizing_task_id, "task-1")
+
+    def test_derived_authority_does_not_bypass_high_evidence(self) -> None:
+        decision = self.decide(
+            task=make_trusted_task(),
+            request=make_request(
+                Intent.PROPOSED,
+                MutationRisk.HIGH,
+                authorizing_ids=("task-1",),
+            ),
+        )
+        self.assertEqual(decision.outcome, MutationOutcome.BLOCK)
+        self.assertNotIn(MutationReason.REQUEST_INTENT_INSUFFICIENT, decision.reasons)
+        self.assertIn(MutationReason.HIGH_EVIDENCE_INSUFFICIENT, decision.reasons)
+        self.assertEqual(decision.authorizing_task_id, "task-1")
+
+    def test_derived_authority_does_not_bypass_critical_risk(self) -> None:
+        decision = self.decide(
+            task=make_trusted_task(),
+            request=make_request(Intent.PROPOSED, MutationRisk.CRITICAL),
+        )
+        self.assertEqual(decision.outcome, MutationOutcome.BLOCK)
+        self.assertIn(MutationReason.CRITICAL_RISK, decision.reasons)
+        self.assertEqual(decision.authorizing_task_id, "task-1")
+
+    def test_derived_authority_does_not_bypass_invariant_conflict(self) -> None:
+        invariant = make_invariant(
+            "inv-block", InvariantEnforcement.BLOCK, InvariantStatus.ACTIVE
+        )
+        decision = self.decide(
+            task=make_trusted_task(),
+            request=make_request(
+                Intent.PROPOSED,
+                MutationRisk.NORMAL,
+                asserted_conflicting_invariant_ids=("inv-block",),
+            ),
+            invariants=(invariant,),
+        )
+        self.assertEqual(decision.outcome, MutationOutcome.BLOCK)
+        self.assertIn(MutationReason.INVARIANT_CONFLICT, decision.reasons)
+        self.assertEqual(decision.authorizing_task_id, "task-1")
+
+    def test_derived_authority_cannot_widen_declared_scope(self) -> None:
+        decision = self.decide(
+            task=make_trusted_task(),
+            request=make_request(
+                Intent.PROPOSED,
+                MutationRisk.NORMAL,
+                declared_scope=("docs",),
+            ),
+        )
+        self.assertEqual(decision.outcome, MutationOutcome.BLOCK)
+        self.assertIn(MutationReason.SCOPE_VIOLATION, decision.reasons)
+
+    def test_protected_and_out_of_root_targets_never_derive(self) -> None:
+        cases = (
+            (protected_eval(".git"), (".git",)),
+            (protected_eval(".evidline"), (".evidline",)),
+            (unsafe_eval(), (".",)),
+        )
+        for evaluation, scope in cases:
+            with self.subTest(target=evaluation.canonical_target):
+                decision = self.decide(
+                    task=make_trusted_task(authorized_scope=scope),
+                    evaluation=evaluation,
+                )
+                self.assertEqual(decision.outcome, MutationOutcome.BLOCK)
+                self.assertIsNone(decision.authorizing_task_id)
+
+    def test_canonical_target_is_matched_instead_of_raw_label(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "project"
+            (root / ".evidline").mkdir(parents=True)
+            (root / "src").mkdir()
+            (root / "docs").mkdir()
+            target = root / "docs" / "file.txt"
+            target.write_text("x", encoding="utf-8")
+            decision = evaluate_and_decide(
+                make_request(Intent.PROPOSED, MutationRisk.NORMAL),
+                root,
+                "src/../docs/file.txt",
+                make_state(tasks=(make_trusted_task(authorized_scope=("docs",)),)),
+            )
+        self.assertEqual(decision.outcome, MutationOutcome.ALLOW)
+        self.assertEqual(decision.authorizing_task_id, "task-1")
+
+    def test_authorizing_task_metadata_is_rendered(self) -> None:
+        decision = self.decide(task=make_trusted_task())
+        self.assertIn("authorizing_task_id: task-1\n", explain(decision))
+        self.assertEqual(
+            json.loads(render_decision_json(decision))["authorizing_task_id"],
+            "task-1",
+        )
+        unrelated = decide_mutation(
+            make_request(Intent.REQUESTED, MutationRisk.LOW), safe_eval(), make_state()
+        )
+        self.assertIsNone(
+            json.loads(render_decision_json(unrelated))["authorizing_task_id"]
+        )
 
 
 class HighRiskTests(unittest.TestCase):
@@ -1043,10 +1256,17 @@ class PurityTests(unittest.TestCase):
             mock.patch("os.lstat") as lstat,
         ):
             scoped = decide_mutation(scoped_request, safe_eval(), make_state())
+            derived = decide_mutation(
+                make_request(Intent.PROPOSED, MutationRisk.NORMAL),
+                safe_eval(),
+                make_state(tasks=(make_trusted_task(),)),
+            )
             protected = decide_mutation(
                 protected_request, protected_eval(".git"), make_state()
             )
         self.assertEqual(scoped.outcome, MutationOutcome.ALLOW)
+        self.assertEqual(derived.outcome, MutationOutcome.ALLOW)
+        self.assertEqual(derived.authorizing_task_id, "task-1")
         self.assertEqual(protected.outcome, MutationOutcome.BLOCK)
         self.assertIn(MutationReason.TARGET_PROTECTED, protected.reasons)
         stat.assert_not_called()

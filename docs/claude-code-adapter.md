@@ -32,7 +32,6 @@ Phase 5 does not provide:
 
 - general architecture-change or unsupported-security-change blocking;
 - semantic risk classification;
-- task-bound path scope;
 - semantic invariant evaluation;
 - evidence-backed HIGH authorization;
 - deterministic `Bash`, `PowerShell`, or `Monitor` coverage; or
@@ -43,12 +42,11 @@ redirection, scripts, PowerShell commands, monitors, and similar mechanisms may
 mutate files outside the covered direct-file tools. MCP tools may do the same.
 Phase 5 does not hide or heuristically compensate for that gap.
 
-Every normal covered, in-root, non-protected mutation currently evaluates to ASK
-because the adapter correctly represents a Claude PreToolUse event as
-`PROPOSED`, not as human-requested or human-authorized intent. Phase 5 cannot
-generally tell an ordinary edit from an unsupported architectural edit; both
-reach ASK unless the existing core finds a deterministic path boundary or
-protected-path violation.
+The adapter continues to represent every Claude PreToolUse event as `PROPOSED`,
+not as human-requested or human-authorized intent. The core may derive bounded
+authority from a trusted, ACTIVE Task whose `authorized_scope` contains the
+canonical target. Without that exact binding, a normal covered mutation reaches
+at least ASK. This does not add semantic architecture or invariant evaluation.
 
 ## ASK and permission modes
 
@@ -131,9 +129,13 @@ Do not treat this example as authorization to create or modify
 `.claude/settings.json` or `~/.claude/settings.json`. Activation and live mode
 testing require a separate human decision.
 
-## Current task-authoring limitation
+## Bounded task approval
 
-There is no supported task-authoring or task-activation workflow. Do not
-manually edit `.evidline/state.json`; `.evidline/**` is protected. The current
-CLI also has no `evidline approve` command. Phase 5 does not invent an authority
-workflow around those limitations.
+For an existing Task record, `evidline approve TASK_ID --scope PATH` performs the
+interactive transition to ACTIVE/AUTHORIZED and records normalized root-relative
+scope. The command requires interactive TTY input and output, displays the exact
+scope, and requires the operator to type the Task ID. TTY interactivity is
+defense-in-depth, not authentication or proof of human identity. The CLI still
+does not provide a general Task creator or arbitrary state editor. Do not
+manually edit `.evidline/state.json`; `.evidline/**` remains protected on covered
+mutation paths.

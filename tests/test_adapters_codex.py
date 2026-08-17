@@ -30,12 +30,18 @@ from evidline.state import (
     StateValidationError,
     Task,
     TaskStatus,
+    TRUSTED_APPROVAL_CHANNEL,
+    TRUSTED_ASSERTED_ACTOR,
     serialize_state,
 )
 
 
 def make_state(
-    *, default_budget_chars: int = 8000, active_task: bool = False
+    *,
+    default_budget_chars: int = 8000,
+    active_task: bool = False,
+    authorized_scope: tuple[str, ...] = (),
+    trusted: bool = False,
 ) -> StateDocument:
     tasks: tuple[Task, ...] = ()
     if active_task:
@@ -46,12 +52,16 @@ def make_state(
                 status=TaskStatus.ACTIVE,
                 intent=Intent.AUTHORIZED,
                 execution=Execution.NOT_RUN,
+                authorized_scope=authorized_scope,
                 approved_at="2026-08-16T00:00:00+04:00",
-                approval_channel="interactive",
+                approval_channel=(
+                    TRUSTED_APPROVAL_CHANNEL if trusted else "interactive"
+                ),
+                asserted_actor=TRUSTED_ASSERTED_ACTOR if trusted else None,
             ),
         )
     return StateDocument(
-        schema_version=1,
+        schema_version=2,
         revision=0,
         project=Project(
             name="Evidline",
@@ -610,6 +620,41 @@ class CodexAdapterTests(unittest.TestCase):
         ):
             result = self.invoke("pre-tool-use", self.tool_payload())
         self.assertEqual(result, (0, "", ""))
+
+    def test_real_scoped_authorization_reaches_silent_allow(self) -> None:
+        self.write_state(
+            make_state(
+                active_task=True,
+                authorized_scope=("src",),
+                trusted=True,
+            )
+        )
+        self.assertEqual(
+            self.invoke("pre-tool-use", self.tool_payload()),
+            (0, "", ""),
+        )
+
+    def test_real_multi_target_uses_max_severity_when_one_target_is_unauthorized(self) -> None:
+        self.write_state(
+            make_state(
+                active_task=True,
+                authorized_scope=("src",),
+                trusted=True,
+            )
+        )
+        command = patch_text(
+            "*** Add File: src/allowed.py",
+            "+allowed",
+            "*** Add File: docs/unauthorized.py",
+            "+unauthorized",
+        )
+        code, stdout, stderr = self.invoke(
+            "pre-tool-use", self.tool_payload(command)
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        reason = str(self.permission_output(stdout)["permissionDecisionReason"])
+        self.assertTrue(reason.startswith("evidline ASK:"))
+        self.assertIn("target_count=2", reason)
 
     def test_state_loader_failures_are_adapter_denials(self) -> None:
         failures = (

@@ -103,6 +103,7 @@ class MutationDecision:
     conflicting_invariant_ids: tuple[str, ...]
     advisory_invariant_ids: tuple[str, ...]
     applicable_invariant_ids: tuple[str, ...]
+    authorizing_task_id: str | None = None
 
 
 _RISK_ORDER: Final = {
@@ -210,6 +211,10 @@ def decide_mutation(
 
     outcome = _BASELINE_OUTCOME[request.risk]
     risk = request.risk
+    active_task = _active_task(state)
+    authorizing_task = _derived_authorizing_task(
+        request, evaluation, active_task
+    )
 
     # Path safety and protection.  Intent never overrides an unsafe target.
     if not evaluation.safe:
@@ -230,7 +235,7 @@ def decide_mutation(
     if request.request_intent is Intent.DENIED:
         escalate(MutationReason.REQUEST_INTENT_DENIED)
         outcome = _max_outcome(outcome, MutationOutcome.BLOCK)
-    elif request.request_intent is Intent.PROPOSED:
+    elif request.request_intent is Intent.PROPOSED and authorizing_task is None:
         escalate(MutationReason.REQUEST_INTENT_INSUFFICIENT)
         if risk is MutationRisk.HIGH or risk is MutationRisk.CRITICAL:
             outcome = _max_outcome(outcome, MutationOutcome.BLOCK)
@@ -243,7 +248,7 @@ def decide_mutation(
         outcome = _max_outcome(outcome, MutationOutcome.BLOCK)
 
     # ACTIVE task anchoring.
-    if _active_task(state) is None:
+    if active_task is None:
         if risk is MutationRisk.NORMAL:
             escalate(MutationReason.NO_ACTIVE_TASK)
             outcome = _max_outcome(outcome, MutationOutcome.ASK)
@@ -312,6 +317,9 @@ def decide_mutation(
         conflicting_invariant_ids=tuple(sorted(set(conflicting_ids))),
         advisory_invariant_ids=tuple(sorted(advisory_set)),
         applicable_invariant_ids=tuple(sorted(applicable_ids)),
+        authorizing_task_id=(
+            authorizing_task.id if authorizing_task is not None else None
+        ),
     )
 
 
@@ -348,10 +356,12 @@ def explain(decision: MutationDecision) -> str:
         raise MutationInputError("decision must be a MutationDecision")
     reasons = ", ".join(reason.value for reason in decision.reasons) or "-"
     target = decision.target if decision.target is not None else "-"
+    authorizing_task_id = decision.authorizing_task_id or "-"
     return (
         f"outcome: {decision.outcome.value}\n"
         f"risk: {decision.risk.value}\n"
         f"target: {target}\n"
+        f"authorizing_task_id: {authorizing_task_id}\n"
         f"reasons: {reasons}\n"
         f"conflicting_invariant_ids: {_render_ids(decision.conflicting_invariant_ids)}\n"
         f"advisory_invariant_ids: {_render_ids(decision.advisory_invariant_ids)}\n"
@@ -369,6 +379,7 @@ def render_decision_json(decision: MutationDecision) -> str:
         "outcome": decision.outcome.value,
         "risk": decision.risk.value,
         "target": decision.target,
+        "authorizing_task_id": decision.authorizing_task_id,
         "reasons": [reason.value for reason in decision.reasons],
         "next_step": decision.next_step,
         "conflicting_invariant_ids": list(decision.conflicting_invariant_ids),
@@ -410,6 +421,37 @@ def _active_task(state: StateDocument) -> Task | None:
         if task.status is TaskStatus.ACTIVE:
             return task
     return None
+
+
+def _derived_authorizing_task(
+    request: MutationRequest,
+    evaluation: PathEvaluation,
+    active_task: Task | None,
+) -> Task | None:
+    """Return the trusted scoped task that satisfies only PROPOSED intent."""
+
+    if request.request_intent is not Intent.PROPOSED:
+        return None
+    if not evaluation.safe or active_task is None:
+        return None
+    if (
+        active_task.status is not TaskStatus.ACTIVE
+        or active_task.intent is not Intent.AUTHORIZED
+        or not active_task.approved_at
+        or active_task.approval_channel != _state.TRUSTED_APPROVAL_CHANNEL
+        or active_task.asserted_actor != _state.TRUSTED_ASSERTED_ACTOR
+        or not active_task.authorized_scope
+        or evaluation.canonical_root is None
+        or evaluation.canonical_target is None
+    ):
+        return None
+    if not _paths.canonical_target_in_authorized_scope(
+        evaluation.canonical_root,
+        evaluation.canonical_target,
+        active_task.authorized_scope,
+    ):
+        return None
+    return active_task
 
 
 def _authorizing_validity(
@@ -478,30 +520,19 @@ def _within_declared_scope(
     target = evaluation.canonical_target
     if root is None or target is None:
         return False
-    root_text = os.path.normcase(os.path.normpath(os.fspath(root)))
-    target_text = os.path.normcase(os.path.normpath(os.fspath(target)))
-
     usable_scopes: list[str] = []
     for scope in declared_scope:
         if os.path.isabs(scope):
             scope_path = scope
         else:
             scope_path = os.path.join(os.fspath(root), scope)
-        scope_text = os.path.normcase(os.path.normpath(scope_path))
-        try:
-            common = os.path.commonpath((scope_text, root_text))
-        except ValueError:
-            return False
-        if common != root_text:
+        scope_text = os.path.normpath(scope_path)
+        if not _paths.path_is_within(root, scope_text):
             return False
         usable_scopes.append(scope_text)
 
     for scope_text in usable_scopes:
-        try:
-            common = os.path.commonpath((scope_text, target_text))
-        except ValueError:
-            continue
-        if common == scope_text:
+        if _paths.path_is_within(scope_text, target):
             return True
     return False
 

@@ -36,8 +36,8 @@ Open V1 blockers do not make a correctly executed benchmark fail.
   existing transport contract.
 - `SYNTHETIC_CROSS_HARNESS_PARITY_VERIFIED`: paired synthetic Claude and Codex
   scenarios match their declared parity contract.
-- `SYNTHETIC_ONLY_UNREACHABLE_IN_PRODUCTION`: an injected ALLOW decision tests
-  output mapping only; no current covered adapter path reaches ALLOW.
+- `SYNTHETIC_MAPPING_ONLY`: an injected ALLOW decision tests output mapping
+  independently from the real scoped-authority scenarios.
 - `UNCOVERED`: the adapter is silent and made no Evidline policy decision.
 - `NOT_MEASURABLE_V1`: the accepted property is outside the implemented V1
   measurement boundary.
@@ -52,17 +52,18 @@ LIVE_CONTEXT_INJECTION     = NOT_ATTEMPTED
 
 ## V1 blockers
 
-`VAB-1` — **adapter-path normal-edit ALLOW unreachable** — is OPEN. Existing
-adapters correctly submit `PROPOSED`, so a safe covered edit reaches Evidline
-ASK. Claude transports it as `ask`; Codex cannot represent that ASK and
-transports it as `deny`. This expected asymmetry is not a divergence.
-No passing adapter false-block rate is claimed while ordinary adapter ALLOW is
-structurally unreachable.
+`VAB-1` — **trusted scoped adapter ALLOW implemented; independent review
+pending** — is `IMPLEMENTED_PENDING_REVIEW`, not CLOSED. The benchmark proves
+that both adapters still submit `PROPOSED`, the core derives authority from a
+trusted ACTIVE Task with matching `authorized_scope`, and the existing silent
+ALLOW transport is reached. Outside-scope and untrusted-channel scenarios do
+not derive authority. This is synthetic in-process proof, not live hook proof or
+human acceptance.
 
 `VAB-2` — **automatic unsupported-architecture-mutation blocking unreachable**
-— is OPEN. Adapters do not bind targets to human-authorized scope or asserted
-invariant conflicts. The benchmark proves only asserted-conflict blocking and
-scope enforcement when those inputs are directly supplied to the core.
+— is OPEN. VAB-1 binds targets to Task scope, but no automatic path-scoped
+invariant relevance or acknowledgement exists. The benchmark proves only
+caller-asserted invariant-conflict blocking.
 
 ## Coverage boundary
 
@@ -99,6 +100,7 @@ token estimate are observations; no real tokenizer is used.
 ## What this does not prove
 
 The benchmark does not prove live hook dispatch, denial before a live mutation,
-live context injection, automatic architecture conflict detection, adapter-level
-ordinary ALLOW, recovery telemetry, LLM-graded recovery accuracy, real tokenizer
-measurement, comprehensive tool coverage, or V1 release acceptance.
+live context injection, automatic architecture conflict detection, live
+adapter-level ordinary ALLOW, recovery telemetry, LLM-graded recovery accuracy,
+real tokenizer measurement, comprehensive tool coverage, or V1 release
+acceptance.
