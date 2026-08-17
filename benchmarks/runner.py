@@ -25,7 +25,7 @@ from benchmarks.scenarios import (
     V1_ACCEPTANCE_BLOCKERS,
     ScenarioSpec,
 )
-from evidline import context, mutation, paths, verification
+from evidline import cli, context, mutation, paths, verification
 from evidline.adapters import claude, codex
 from evidline.context import (
     ContextInputError,
@@ -47,6 +47,7 @@ from evidline.state import (
     TaskStatus,
     TRUSTED_APPROVAL_CHANNEL,
     TRUSTED_ASSERTED_ACTOR,
+    load_state,
 )
 
 
@@ -1027,6 +1028,130 @@ def _scenario_verify(
     raise KeyError(scenario_id)
 
 
+def _scenario_authoring(
+    fixture: BenchmarkFixture,
+    scenario_id: str,
+) -> dict[str, Any]:
+    if scenario_id == "authoring.task_created_unapproved":
+        root = fixture.fresh_authoring_root("task")
+        _invoke_argv(cli, ("init", "--root", str(root)))
+        exit_code, _, _ = _invoke_argv(
+            cli,
+            (
+                "add-task",
+                "--root",
+                str(root),
+                "--id",
+                "task-authored",
+                "--description",
+                "Synthetic authored task",
+            ),
+        )
+        document = load_state(root)
+        task = document.tasks[0]
+        return {
+            "exit": exit_code,
+            "status": task.status.value,
+            "intent": task.intent.value,
+            "execution": task.execution.value,
+            "authorized_scope": task.authorized_scope,
+            "acknowledged_invariant_ids": task.acknowledged_invariant_ids,
+            "approval_metadata_absent": all(
+                value is None
+                for value in (
+                    task.approved_at,
+                    task.approval_channel,
+                    task.asserted_actor,
+                )
+            ),
+            "trusted_active_task": mutation._is_trusted_active_task(task),
+            "revision": document.revision,
+        }
+    if scenario_id == "authoring.invariant_governed_scope_created":
+        root = fixture.fresh_authoring_root("invariant")
+        _invoke_argv(cli, ("init", "--root", str(root)))
+        exit_code, _, _ = _invoke_argv(
+            cli,
+            (
+                "add-invariant",
+                "--root",
+                str(root),
+                "--id",
+                "inv-authored",
+                "--description",
+                "Synthetic authored invariant",
+                "--enforcement",
+                "BLOCK",
+                "--governed-scope",
+                "src",
+                "--governed-scope",
+                "docs",
+            ),
+        )
+        document = load_state(root)
+        invariant = document.invariants[0]
+        return {
+            "exit": exit_code,
+            "enforcement": invariant.enforcement.value,
+            "status": invariant.status.value,
+            "governed_scope": invariant.governed_scope,
+            "approval_metadata_absent": all(
+                value is None
+                for value in (
+                    invariant.approved_at,
+                    invariant.approval_channel,
+                    invariant.asserted_actor,
+                )
+            ),
+            "revision": document.revision,
+        }
+    if scenario_id == "authoring.empty_governed_scope_is_not_repository_global":
+        empty_root = fixture.fresh_authoring_root("empty-scope")
+        dot_root = fixture.fresh_authoring_root("dot-scope")
+        _invoke_argv(cli, ("init", "--root", str(empty_root)))
+        empty_exit, _, _ = _invoke_argv(
+            cli,
+            (
+                "add-invariant",
+                "--root",
+                str(empty_root),
+                "--id",
+                "inv-empty",
+                "--description",
+                "No target binding",
+                "--enforcement",
+                "BLOCK",
+            ),
+        )
+        _invoke_argv(cli, ("init", "--root", str(dot_root)))
+        _invoke_argv(
+            cli,
+            (
+                "add-invariant",
+                "--root",
+                str(dot_root),
+                "--id",
+                "inv-dot",
+                "--description",
+                "Whole repository",
+                "--enforcement",
+                "BLOCK",
+                "--governed-scope",
+                ".",
+            ),
+        )
+        empty_scope = load_state(empty_root).invariants[0].governed_scope
+        dot_scope = load_state(dot_root).invariants[0].governed_scope
+        return {
+            "exit": empty_exit,
+            "governed_scope": empty_scope,
+            "meaning": "NO_TARGET_BINDING" if not empty_scope else "GOVERNED_PREFIXES",
+            "dot_scope_meaning": "WHOLE_REPOSITORY" if "." in dot_scope else "GOVERNED_PREFIXES",
+            "equal": empty_scope == dot_scope,
+        }
+    raise KeyError(scenario_id)
+
+
 def _execute_scenario(fixture: BenchmarkFixture, spec: ScenarioSpec) -> dict[str, Any]:
     dispatch: dict[str, Callable[[BenchmarkFixture, str], dict[str, Any]]] = {
         "core": _scenario_core,
@@ -1035,6 +1160,7 @@ def _execute_scenario(fixture: BenchmarkFixture, spec: ScenarioSpec) -> dict[str
         "codex": _scenario_codex,
         "adapters": _scenario_adapters,
         "verify": _scenario_verify,
+        "authoring": _scenario_authoring,
         "cross": _scenario_cross,
     }
     return dispatch[spec.category](fixture, spec.id)

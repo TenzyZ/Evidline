@@ -28,6 +28,7 @@ from evidline.state import (
     InvariantStatus,
     Project,
     StateDocument,
+    StateConflictError,
     StateIOError,
     StateValidationError,
     Task,
@@ -37,6 +38,7 @@ from evidline.state import (
     Verification,
     load_state,
     serialize_state,
+    validate_state,
 )
 
 
@@ -718,6 +720,332 @@ class CliTests(unittest.TestCase):
             stdout,
         )
         self.assertIs(load_state(self.root).scope_semantics, host_scope_semantics())
+
+    def test_add_task_creates_exact_untrusted_draft_and_preserves_related_order(self) -> None:
+        self.initialize()
+        code, stdout, stderr = self.run_cli(
+            "add-invariant",
+            "--root",
+            str(self.root),
+            "--id",
+            "inv-arch",
+            "--description",
+            "Architecture boundary",
+            "--enforcement",
+            "BLOCK",
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_cli(
+            "add-task",
+            "--root",
+            str(self.root),
+            "--id",
+            "task-work",
+            "--description",
+            "Perform bounded work",
+            "--related-id",
+            "inv-arch",
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertEqual(
+            stdout,
+            "\n".join(
+                (
+                    "created: task-work",
+                    "state_revision: 2",
+                    "status: DRAFT",
+                    "intent: PROPOSED",
+                    "execution: NOT_RUN",
+                    "related_ids:",
+                    "- inv-arch",
+                    "authorized_scope:",
+                    "- (none)",
+                    "acknowledged_invariant_ids:",
+                    "- (none)",
+                    "approval: (none)",
+                    "next: evidline approve task-work --scope ROOT_RELATIVE_PATH",
+                    "",
+                )
+            ),
+        )
+        document = load_state(self.root)
+        task = document.tasks[0]
+        self.assertEqual(document.revision, 2)
+        self.assertEqual(task.status, TaskStatus.DRAFT)
+        self.assertEqual(task.intent, Intent.PROPOSED)
+        self.assertEqual(task.execution, Execution.NOT_RUN)
+        self.assertEqual(task.related_ids, ("inv-arch",))
+        self.assertEqual(task.authorized_scope, ())
+        self.assertEqual(task.acknowledged_invariant_ids, ())
+        self.assertEqual(
+            (task.approved_at, task.approval_channel, task.asserted_actor),
+            (None, None, None),
+        )
+        self.assertFalse(mutation._is_trusted_active_task(task))
+
+    def test_add_task_allows_multiple_drafts_without_disturbing_active_task(self) -> None:
+        state_path = self.write_state(high_state())
+        before_revision = load_state(self.root).revision
+        for task_id in ("task-draft-one", "task-draft-two"):
+            with self.subTest(task_id=task_id):
+                code, stdout, stderr = self.run_cli(
+                    "add-task",
+                    "--root",
+                    str(self.root),
+                    "--id",
+                    task_id,
+                    "--description",
+                    "Draft task",
+                )
+                self.assertEqual((code, stderr), (0, ""))
+                self.assertIn(f"created: {task_id}\n", stdout)
+        document = load_state(self.root)
+        self.assertEqual(document.revision, before_revision + 2)
+        self.assertEqual(
+            [task.id for task in document.tasks if task.status is TaskStatus.ACTIVE],
+            ["task-1"],
+        )
+        self.assertEqual([task.id for task in document.tasks[1:]], ["task-draft-one", "task-draft-two"])
+        self.assertTrue(state_path.is_file())
+
+    def test_add_task_rejects_invalid_proposals_without_mutating(self) -> None:
+        state_path = self.write_state(high_state())
+        before = state_path.read_bytes()
+        cases = (
+            ("--id", "task-1", "--description", "Duplicate task"),
+            ("--id", "inv-1", "--description", "Duplicate invariant"),
+            ("--id", "dec-1", "--description", "Duplicate decision"),
+            ("--id", "claim-1", "--description", "Duplicate claim"),
+            ("--id", "evidence-1", "--description", "Duplicate evidence"),
+            ("--id", "bad", "--description", "Bad id"),
+            ("--id", "task-empty", "--description", ""),
+            ("--id", "task-duplicate-related", "--description", "Duplicate", "--related-id", "inv-1", "--related-id", "inv-1"),
+            ("--id", "task-unknown-related", "--description", "Unknown", "--related-id", "inv-unknown"),
+        )
+        for extra in cases:
+            with self.subTest(extra=extra):
+                code, stdout, stderr = self.run_cli(
+                    "add-task", "--root", str(self.root), *extra
+                )
+                self.assertEqual((code, stdout), (6, ""))
+                self.assertNotEqual(stderr, "")
+                self.assertEqual(state_path.read_bytes(), before)
+
+    def test_add_task_error_mapping_discovery_and_unsupported_flags(self) -> None:
+        code, stdout, stderr = self.run_cli(
+            "add-task", "--id", "task-missing", "--description", "Missing"
+        )
+        self.assertEqual((code, stdout), (3, ""))
+        self.assertIn("state not initialized", stderr)
+
+        state_path = self.initialize()
+        state_path.write_text("{", encoding="utf-8")
+        code, stdout, stderr = self.run_cli(
+            "add-task", "--id", "task-invalid", "--description", "Invalid"
+        )
+        self.assertEqual((code, stdout), (4, ""))
+        self.assertIn("invalid or unsupported state", stderr)
+
+        self.write_state(high_state())
+        before = state_path.read_bytes()
+        for error in (StateIOError("denied"), StateConflictError("locked")):
+            with self.subTest(error=type(error).__name__), mock.patch(
+                "evidline.cli.state.write_state", side_effect=error
+            ):
+                code, stdout, stderr = self.run_cli(
+                    "add-task", "--id", "task-write", "--description", "Write"
+                )
+                self.assertEqual((code, stdout), (5, ""))
+                self.assertNotEqual(stderr, "")
+                self.assertEqual(state_path.read_bytes(), before)
+
+        for flag in (
+            "--scope",
+            "--acknowledge",
+            "--status",
+            "--intent",
+            "--approved-at",
+            "--approval-channel",
+            "--asserted-actor",
+        ):
+            with self.subTest(flag=flag):
+                code, stdout, stderr = self.run_cli(
+                    "add-task",
+                    "--id",
+                    "task-flag",
+                    "--description",
+                    "Flags",
+                    flag,
+                    "value",
+                )
+                self.assertEqual((code, stdout), (2, ""))
+                self.assertIn("unrecognized arguments", stderr)
+
+    def test_add_task_discovers_root_from_nested_path(self) -> None:
+        self.initialize()
+        nested = self.root / "src" / "nested"
+        nested.mkdir(parents=True)
+        code, stdout, stderr = self.run_cli(
+            "add-task",
+            "--root",
+            str(nested),
+            "--id",
+            "task-nested",
+            "--description",
+            "Nested root discovery",
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertIn("created: task-nested\n", stdout)
+        self.assertEqual(load_state(self.root).tasks[0].id, "task-nested")
+
+    def test_add_invariant_creates_active_record_and_scope_meanings(self) -> None:
+        self.initialize()
+        cases = (
+            ("inv-empty", "ADVISE", (), "NO_TARGET_BINDING"),
+            ("inv-root", "BLOCK", (".",), "WHOLE_REPOSITORY"),
+            ("inv-prefix", "BLOCK", ("src/", "docs"), "GOVERNED_PREFIXES"),
+        )
+        for invariant_id, enforcement, scopes, meaning in cases:
+            arguments = [
+                "add-invariant",
+                "--root",
+                str(self.root),
+                "--id",
+                invariant_id,
+                "--description",
+                "Invariant",
+                "--enforcement",
+                enforcement,
+            ]
+            for scope in scopes:
+                arguments.extend(("--governed-scope", scope))
+            with self.subTest(invariant_id=invariant_id):
+                code, stdout, stderr = self.run_cli(*arguments)
+                self.assertEqual((code, stderr), (0, ""))
+                self.assertIn(f"enforcement: {enforcement}\n", stdout)
+                self.assertIn(f"governed_scope_meaning: {meaning}\n", stdout)
+        document = load_state(self.root)
+        self.assertEqual(document.revision, 3)
+        self.assertEqual(document.invariants[0].governed_scope, ())
+        self.assertEqual(document.invariants[1].governed_scope, (".",))
+        self.assertEqual(document.invariants[2].governed_scope, ("src", "docs"))
+        for invariant in document.invariants:
+            self.assertEqual(invariant.status, InvariantStatus.ACTIVE)
+            self.assertIsNone(invariant.superseded_by)
+            self.assertEqual(
+                (invariant.approved_at, invariant.approval_channel, invariant.asserted_actor),
+                (None, None, None),
+            )
+
+    def test_add_invariant_rejects_invalid_scopes_duplicates_and_flags_unchanged(self) -> None:
+        state_path = self.initialize()
+        before = state_path.read_bytes()
+        cases = (
+            ("--id", "inv-duplicate", "--description", "Duplicate", "--enforcement", "BLOCK", "--governed-scope", "src", "--governed-scope", "src/"),
+            ("--id", "inv-unsafe", "--description", "Unsafe", "--enforcement", "BLOCK", "--governed-scope", "../outside"),
+            ("--id", "bad", "--description", "Bad", "--enforcement", "BLOCK"),
+        )
+        for extra in cases:
+            with self.subTest(extra=extra):
+                code, stdout, stderr = self.run_cli(
+                    "add-invariant", "--root", str(self.root), *extra
+                )
+                self.assertEqual((code, stdout), (6, ""))
+                self.assertNotEqual(stderr, "")
+                self.assertEqual(state_path.read_bytes(), before)
+        code, stdout, stderr = self.run_cli(
+            "add-invariant", "--root", str(self.root), "--id", "inv-missing", "--description", "Missing"
+        )
+        self.assertEqual((code, stdout), (2, ""))
+        self.assertIn("--enforcement", stderr)
+        code, stdout, stderr = self.run_cli(
+            "add-invariant", "--root", str(self.root), "--id", "inv-choice", "--description", "Choice", "--enforcement", "MAYBE"
+        )
+        self.assertEqual((code, stdout), (2, ""))
+        for flag in (
+            "--status",
+            "--superseded-by",
+            "--approved-at",
+            "--approval-channel",
+            "--asserted-actor",
+        ):
+            with self.subTest(flag=flag):
+                code, stdout, stderr = self.run_cli(
+                    "add-invariant", "--root", str(self.root), "--id", "inv-flag", "--description", "Flag", "--enforcement", "BLOCK", flag, "value"
+                )
+                self.assertEqual((code, stdout), (2, ""))
+                self.assertIn("unrecognized arguments", stderr)
+
+    def test_add_invariant_preserves_foreign_empty_semantics_and_rejects_native_scope(self) -> None:
+        state_path = self.initialize()
+        current = load_state(self.root)
+        foreign = (
+            ScopePathSemantics.CASE_SENSITIVE
+            if host_scope_semantics() is ScopePathSemantics.CASE_FOLDED
+            else ScopePathSemantics.CASE_FOLDED
+        )
+        self.write_state(replace(current, scope_semantics=foreign))
+        before = state_path.read_bytes()
+        code, stdout, stderr = self.run_cli(
+            "add-invariant", "--root", str(self.root), "--id", "inv-foreign", "--description", "Foreign", "--enforcement", "BLOCK", "--governed-scope", "src"
+        )
+        self.assertEqual((code, stdout), (6, ""))
+        self.assertEqual(
+            stderr,
+            "evidline: invalid governed scope: cannot author native scope under foreign scope_semantics; use the interactive approve ceremony to restamp\n",
+        )
+        self.assertEqual(state_path.read_bytes(), before)
+        code, stdout, stderr = self.run_cli(
+            "add-invariant", "--root", str(self.root), "--id", "inv-empty-foreign", "--description", "Empty", "--enforcement", "ADVISE"
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertIn("governed_scope_meaning: NO_TARGET_BINDING\n", stdout)
+        self.assertIs(load_state(self.root).scope_semantics, foreign)
+
+    def test_add_invariant_write_conflict_and_cross_record_duplicate_leave_state_unchanged(self) -> None:
+        state_path = self.write_state(high_state())
+        before = state_path.read_bytes()
+        code, stdout, stderr = self.run_cli(
+            "add-invariant", "--root", str(self.root), "--id", "task-1", "--description", "Duplicate", "--enforcement", "BLOCK"
+        )
+        self.assertEqual((code, stdout), (6, ""))
+        self.assertEqual(state_path.read_bytes(), before)
+        with mock.patch(
+            "evidline.cli.state.write_state", side_effect=StateConflictError("locked")
+        ):
+            code, stdout, stderr = self.run_cli(
+                "add-invariant", "--root", str(self.root), "--id", "inv-write", "--description", "Write", "--enforcement", "BLOCK"
+            )
+        self.assertEqual((code, stdout), (5, ""))
+        self.assertEqual(state_path.read_bytes(), before)
+
+    def test_supported_authoring_reaches_existing_approval_ceremony(self) -> None:
+        self.initialize()
+        code, stdout, stderr = self.run_cli(
+            "add-invariant", "--root", str(self.root), "--id", "inv-arch", "--description", "Architecture", "--enforcement", "BLOCK", "--governed-scope", "src"
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_cli(
+            "add-task", "--root", str(self.root), "--id", "task-work", "--description", "Bounded work"
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        with mock.patch("evidline.cli.datetime") as clock:
+            clock.now.return_value.isoformat.return_value = "2026-08-17T12:00:00+00:00"
+            code, stdout, stderr = self.run_cli(
+                "approve", "task-work", "--root", str(self.root), "--scope", "src", "--acknowledge", "inv-arch", stdin_text="task-work\n", interactive=True
+            )
+        self.assertEqual((code, stderr), (0, ""))
+        final_state = load_state(self.root)
+        task = final_state.tasks[0]
+        self.assertEqual(final_state.revision, 3)
+        self.assertEqual(task.status, TaskStatus.ACTIVE)
+        self.assertEqual(task.intent, Intent.AUTHORIZED)
+        self.assertEqual(task.authorized_scope, ("src",))
+        self.assertEqual(task.acknowledged_invariant_ids, ("inv-arch",))
+        self.assertEqual(task.approval_channel, TRUSTED_APPROVAL_CHANNEL)
+        self.assertEqual(task.asserted_actor, TRUSTED_ASSERTED_ACTOR)
+        validate_state(final_state)
+        self.assertTrue(mutation._is_trusted_active_task(task))
 
     def check(self, risk: str, *extra: str, target: str = "src/app.py"):
         return self.run_cli(

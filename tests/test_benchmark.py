@@ -100,6 +100,18 @@ class BenchmarkTests(unittest.TestCase):
         self.assertTrue(no_write["state_bytes_unchanged"])
         self.assertTrue(no_write["revision_unchanged"])
 
+    def test_authoring_scenarios(self) -> None:
+        self.assert_category_matched("authoring")
+        task = self.results["authoring.task_created_unapproved"]["actual"]
+        self.assertEqual(task["status"], "DRAFT")
+        self.assertFalse(task["trusted_active_task"])
+        empty_scope = self.results[
+            "authoring.empty_governed_scope_is_not_repository_global"
+        ]["actual"]
+        self.assertEqual(empty_scope["meaning"], "NO_TARGET_BINDING")
+        self.assertEqual(empty_scope["dot_scope_meaning"], "WHOLE_REPOSITORY")
+        self.assertFalse(empty_scope["equal"])
+
     def test_vab1_scoped_adapter_proofs(self) -> None:
         for scenario_id in (
             "claude.authorized_normal_mutation",
