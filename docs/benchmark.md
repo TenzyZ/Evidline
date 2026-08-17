@@ -52,26 +52,49 @@ LIVE_CONTEXT_INJECTION     = NOT_ATTEMPTED
 
 ## V1 blockers
 
-`VAB-1` — **trusted scoped adapter ALLOW implemented; independent review
-pending** — is `IMPLEMENTED_PENDING_REVIEW`, not CLOSED. The benchmark proves
-that both adapters still submit `PROPOSED`, the core derives authority from a
-trusted ACTIVE Task with matching `authorized_scope`, and the existing silent
-ALLOW transport is reached. Outside-scope and untrusted-channel scenarios do
-not derive authority. This is synthetic in-process proof, not live hook proof or
-human acceptance.
+`VAB-1` — **trusted scoped adapter ALLOW implemented and reviewed** — is
+`CLOSED`. Its engineering implementation, independent review, and synthetic
+benchmark closure are recorded. The benchmark proves that both adapters still
+submit `PROPOSED`, the core derives authority from a trusted ACTIVE Task with
+matching `authorized_scope`, and the existing silent ALLOW transport is
+reached. Outside-scope and untrusted-channel scenarios do not derive authority.
+This remains synthetic in-process proof, not live hook proof or human
+acceptance.
 
 `VAB-2` — **target-to-governed-invariant binding and acknowledgement
-enforcement** — is `IMPLEMENTED_PENDING_REVIEW`, not CLOSED. A covered mutation
-whose canonical target lies inside the governed filesystem scope of an ACTIVE
-BLOCK invariant is deterministically blocked unless the trusted ACTIVE Task
+enforcement** — is `CLOSED`. Its engineering implementation, independent
+review, and synthetic benchmark closure are recorded. A covered mutation whose
+canonical target lies inside the governed filesystem scope of an ACTIVE BLOCK
+invariant is deterministically blocked unless the trusted ACTIVE Task
 explicitly acknowledges that invariant, provided no earlier failure prevents
 policy evaluation. The benchmark also proves that acknowledgement does not
 suppress caller-asserted invariant conflicts and that both existing adapters
 transport the core BLOCK as denial.
 
-VAB-2 is structural. It does not perform semantic invariant interpretation,
-diff-content understanding, or architecture-violation inference from prose.
-These are synthetic in-process proofs, not installed or live hook enforcement.
+VAB-1 and VAB-2 closure does not invalidate the remaining V1 limitations below.
+Because they are closed while other acceptance requirements remain unsatisfied,
+overall `v1_acceptance` remains `BLOCKED`.
+
+`VAB-3` — **reproducible evidence verifier absent; persisted claims cannot reach
+VERIFIED** — is `OPEN`.
+
+`VAB-4` — **verified handoff absent; handoff profile is explicitly unverified**
+— is `OPEN`.
+
+`VAB-5` — **doctor / validation capability absent** — is `OPEN`.
+
+`VAB-6` — **supported Task and Invariant authoring surface absent** — is `OPEN`.
+
+`VAB-7` — **live harness evidence absent; installed dispatch, injection, and
+denial unattempted** — is `OPEN`.
+
+`VAB-8` — **V1 demo acceptance contract undefined** — is `UNRESOLVED`. The item
+is within accepted V1 scope, but its exact acceptance contract has not yet been
+defined.
+
+VAB-1 through VAB-8 are present acceptance limitations or status, not
+implementation work already underway. Nothing in this section is a commitment to
+future-phase work, and the demo contract is deliberately not defined here.
 
 ## Coverage boundary
 
