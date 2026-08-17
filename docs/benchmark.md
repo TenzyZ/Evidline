@@ -34,6 +34,8 @@ Open V1 blockers do not make a correctly executed benchmark fail.
   budget invariants match the current compiler.
 - `ADAPTER_TRANSPORT_VERIFIED`: in-process adapter output mapping matches the
   existing transport contract.
+- `REPRODUCIBLE_EVIDENCE_VERIFIED`: deterministic library-only evidence and
+  claim verification scenarios match their declared byte-binding results.
 - `SYNTHETIC_CROSS_HARNESS_PARITY_VERIFIED`: paired synthetic Claude and Codex
   scenarios match their declared parity contract.
 - `SYNTHETIC_MAPPING_ONLY`: an injected ALLOW decision tests output mapping
@@ -49,6 +51,19 @@ INSTALLED_HARNESS_DISPATCH = NOT_ATTEMPTED
 LIVE_MUTATION_DENIAL       = NOT_ATTEMPTED
 LIVE_CONTEXT_INJECTION     = NOT_ATTEMPTED
 ```
+
+## Phase 9B verifier coverage
+
+The nine `verify.*` scenarios exercise the library verifier directly: matching,
+mismatching, missing, and protected evidence sources; verified, failed, and
+unverified claim precedence; persisted-volatile freshness separation; and the
+no-state-write invariant. They hash deterministic raw text, empty, and binary
+fixture files inside the disposable benchmark sandbox.
+
+This proves only the Phase 9B library verifier. It does not prove CLI
+verification, automatic state-load verification, context integration, mutation
+integration, live Claude enforcement, live Codex enforcement, hooks, persisted
+`VERIFIED`, TOCTOU protection, or hardlink protection.
 
 ## V1 blockers
 

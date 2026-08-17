@@ -31,6 +31,22 @@ from evidline.state import (
 
 APPROVED_AT = "2026-08-17T00:00:00+04:00"
 APPROVAL_CHANNEL = "phase-7-fixture"
+VERIFIED_SOURCE_BYTES = b"VERIFIED = True\n"
+MISMATCHED_SOURCE_BYTES = b"ACTUAL = 'different'\n"
+EMPTY_SOURCE_BYTES = b""
+BINARY_SOURCE_BYTES = b"\x00\xff\x10evidline\x00"
+VERIFIED_SOURCE_DIGEST = (
+    "sha256:8f8551a931f842c9b5c6f45860b02ae935c0d62254223e4d91cfba1d03a165e8"
+)
+MISMATCH_EXPECTED_DIGEST = (
+    "sha256:fb0b29f79a6c00620b0ce04134c44172c04a7881815fff5b97ae5264bc8289de"
+)
+EMPTY_SOURCE_DIGEST = (
+    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+)
+BINARY_SOURCE_DIGEST = (
+    "sha256:04166a656a4f859ecc91d52208afc20b22f26d39e02947aaeb0c486e1e1a9086"
+)
 
 
 class SandboxContainmentError(RuntimeError):
@@ -55,14 +71,12 @@ def build_state() -> StateDocument:
             description="Direct synthetic benchmark observation",
             provenance=EvidenceProvenance.DIRECT_OBSERVATION,
             execution=Execution.EXECUTED,
-            digest="sha256:" + "a" * 64,
         ),
         Evidence(
             id="evidence-tool",
             description="Tool output for synthetic benchmark digest",
             provenance=EvidenceProvenance.TOOL_OUTPUT,
             execution=Execution.EXECUTED,
-            digest="sha256:" + "b" * 64,
         ),
         Evidence(
             id="evidence-agent",
@@ -126,7 +140,7 @@ def build_state() -> StateDocument:
         ),
     )
     state = StateDocument(
-        schema_version=3,
+        schema_version=4,
         revision=7,
         project=Project(
             name="Evidline synthetic benchmark",
@@ -231,6 +245,123 @@ def build_state() -> StateDocument:
     return state
 
 
+def build_verification_state() -> StateDocument:
+    """Return isolated records for the Phase 9B library verifier scenarios."""
+
+    evidence = (
+        Evidence(
+            id="evidence-verify-good",
+            description="Deterministic matching verification source",
+            provenance=EvidenceProvenance.DIRECT_OBSERVATION,
+            execution=Execution.EXECUTED,
+            source_path="src/verified.py",
+            digest=VERIFIED_SOURCE_DIGEST,
+        ),
+        Evidence(
+            id="evidence-verify-failed",
+            description="Deterministic mismatching verification source",
+            provenance=EvidenceProvenance.DIRECT_OBSERVATION,
+            execution=Execution.EXECUTED,
+            source_path="src/mismatched.py",
+            digest=MISMATCH_EXPECTED_DIGEST,
+        ),
+        Evidence(
+            id="evidence-verify-missing",
+            description="Deterministic missing verification source",
+            provenance=EvidenceProvenance.DIRECT_OBSERVATION,
+            execution=Execution.EXECUTED,
+            source_path="src/missing.py",
+            digest=VERIFIED_SOURCE_DIGEST,
+        ),
+        Evidence(
+            id="evidence-verify-protected",
+            description="Protected verification source",
+            provenance=EvidenceProvenance.DIRECT_OBSERVATION,
+            execution=Execution.EXECUTED,
+            source_path=".evidline/state.json",
+            digest=VERIFIED_SOURCE_DIGEST,
+        ),
+        Evidence(
+            id="evidence-verify-empty",
+            description="Deterministic empty verification source",
+            provenance=EvidenceProvenance.DIRECT_OBSERVATION,
+            execution=Execution.EXECUTED,
+            source_path="src/empty.bin",
+            digest=EMPTY_SOURCE_DIGEST,
+        ),
+        Evidence(
+            id="evidence-verify-binary",
+            description="Deterministic binary verification source",
+            provenance=EvidenceProvenance.DIRECT_OBSERVATION,
+            execution=Execution.EXECUTED,
+            source_path="src/binary.bin",
+            digest=BINARY_SOURCE_DIGEST,
+        ),
+    )
+    claims = (
+        Claim(
+            id="claim-verify-good",
+            description="All current byte bindings reproduce",
+            freshness=ClaimFreshness.DIGEST_BOUND,
+            verification=Verification.UNVERIFIED,
+            reproducible=True,
+            evidence_ids=(
+                "evidence-verify-good",
+                "evidence-verify-empty",
+                "evidence-verify-binary",
+            ),
+        ),
+        Claim(
+            id="claim-verify-failed-precedence",
+            description="A mismatch outranks an unverifiable binding",
+            freshness=ClaimFreshness.DIGEST_BOUND,
+            verification=Verification.UNVERIFIED,
+            reproducible=True,
+            evidence_ids=(
+                "evidence-verify-missing",
+                "evidence-verify-failed",
+            ),
+        ),
+        Claim(
+            id="claim-verify-unverified-precedence",
+            description="An unverifiable binding prevents verification",
+            freshness=ClaimFreshness.DIGEST_BOUND,
+            verification=Verification.UNVERIFIED,
+            reproducible=True,
+            evidence_ids=(
+                "evidence-verify-good",
+                "evidence-verify-missing",
+            ),
+        ),
+        Claim(
+            id="claim-verify-volatile",
+            description="Freshness is orthogonal to byte reproduction",
+            freshness=ClaimFreshness.PERSISTED_VOLATILE,
+            verification=Verification.UNVERIFIED,
+            reproducible=True,
+            evidence_ids=("evidence-verify-good",),
+        ),
+    )
+    state = StateDocument(
+        schema_version=4,
+        revision=11,
+        project=Project(
+            name="Evidline verification benchmark",
+            purpose="Measure deterministic library verification",
+            ignore_globs=(),
+            default_budget_chars=12000,
+        ),
+        invariants=(),
+        decisions=(),
+        tasks=(),
+        claims=claims,
+        evidence=evidence,
+        counters={"claim": len(claims), "evidence": len(evidence)},
+    )
+    validate_state(state)
+    return state
+
+
 @dataclass(slots=True)
 class BenchmarkFixture:
     """One independently located benchmark fixture."""
@@ -241,6 +372,7 @@ class BenchmarkFixture:
     outside: Path
     no_root: Path
     state: StateDocument
+    verification_state: StateDocument
 
     @classmethod
     def create(cls) -> "BenchmarkFixture":
@@ -249,7 +381,15 @@ class BenchmarkFixture:
         root = sandbox / "project"
         outside = sandbox / "outside.py"
         no_root = sandbox / "uninitialized" / "nested"
-        fixture = cls(temporary, sandbox, root, outside, no_root, build_state())
+        fixture = cls(
+            temporary,
+            sandbox,
+            root,
+            outside,
+            no_root,
+            build_state(),
+            build_verification_state(),
+        )
         try:
             fixture._materialize()
         except Exception:
@@ -334,4 +474,12 @@ class BenchmarkFixture:
         }
         for path, text in files.items():
             self.assert_sandbox_path(path).write_text(text, encoding="utf-8")
+        verification_files = {
+            self.root / "src" / "verified.py": VERIFIED_SOURCE_BYTES,
+            self.root / "src" / "mismatched.py": MISMATCHED_SOURCE_BYTES,
+            self.root / "src" / "empty.bin": EMPTY_SOURCE_BYTES,
+            self.root / "src" / "binary.bin": BINARY_SOURCE_BYTES,
+        }
+        for path, data in verification_files.items():
+            self.assert_sandbox_path(path).write_bytes(data)
         self.write_state()

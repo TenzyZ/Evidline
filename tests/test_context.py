@@ -50,7 +50,7 @@ from evidline.state import (
 
 def base_state(*, revision: int = 0) -> StateDocument:
     return StateDocument(
-        schema_version=3,
+        schema_version=4,
         revision=revision,
         project=Project(
             name="Evidline",
@@ -136,6 +136,7 @@ def one_evidence() -> Evidence:
         description="Observed digest",
         provenance=EvidenceProvenance.DIRECT_OBSERVATION,
         execution=Execution.EXECUTED,
+        source_path="evidence/observed.txt",
         digest="sha256:" + "a" * 64,
     )
 
