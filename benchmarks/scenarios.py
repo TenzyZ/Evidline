@@ -124,8 +124,8 @@ V1_ACCEPTANCE_BLOCKERS: Final = (
     },
     {
         "id": "VAB-3",
-        "title": "reproducible evidence verifier absent; persisted claims cannot reach VERIFIED",
-        "status": "OPEN",
+        "title": "reproducible evidence verifier implemented; verdicts remain ephemeral and persisted VERIFIED stays prohibited",
+        "status": "CLOSED",
     },
     {
         "id": "VAB-4",
