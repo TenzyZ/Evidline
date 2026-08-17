@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -24,7 +25,7 @@ from evidline.mutation import (
     load_and_decide,
     render_decision_json,
 )
-from evidline.paths import PathEvaluation
+from evidline.paths import PathEvaluation, ScopePathSemantics, host_scope_semantics
 from evidline.state import (
     Claim,
     ClaimFreshness,
@@ -61,7 +62,7 @@ def make_state(
     invariants: tuple[Invariant, ...] = (),
 ) -> StateDocument:
     return StateDocument(
-        schema_version=2,
+        schema_version=3,
         revision=0,
         project=Project(
             name="Evidline",
@@ -85,6 +86,7 @@ def make_task(
     authorized_scope: tuple[str, ...] = (),
     approval_channel: str = APPROVAL_CHANNEL,
     asserted_actor: str | None = None,
+    acknowledged_invariant_ids: tuple[str, ...] = (),
 ) -> Task:
     return Task(
         id=task_id,
@@ -96,6 +98,7 @@ def make_task(
         approved_at=APPROVED_AT,
         approval_channel=approval_channel,
         asserted_actor=asserted_actor,
+        acknowledged_invariant_ids=acknowledged_invariant_ids,
     )
 
 
@@ -103,12 +106,14 @@ def make_trusted_task(
     status: TaskStatus = TaskStatus.ACTIVE,
     *,
     authorized_scope: tuple[str, ...] = ("src",),
+    acknowledged_invariant_ids: tuple[str, ...] = (),
 ) -> Task:
     return make_task(
         status,
         authorized_scope=authorized_scope,
         approval_channel=TRUSTED_APPROVAL_CHANNEL,
         asserted_actor=TRUSTED_ASSERTED_ACTOR,
+        acknowledged_invariant_ids=acknowledged_invariant_ids,
     )
 
 
@@ -159,6 +164,7 @@ def make_invariant(
     enforcement: InvariantEnforcement,
     status: InvariantStatus,
     superseded_by: str | None = None,
+    governed_scope: tuple[str, ...] = (),
 ) -> Invariant:
     return Invariant(
         id=invariant_id,
@@ -170,6 +176,7 @@ def make_invariant(
         approval_channel=(
             APPROVAL_CHANNEL if status is InvariantStatus.SUPERSEDED else None
         ),
+        governed_scope=governed_scope,
     )
 
 
@@ -1027,6 +1034,288 @@ class InvariantTests(unittest.TestCase):
         self.assertEqual(decision.advisory_invariant_ids, ("inv-advise",))
 
 
+class InvariantScopeBindingTests(unittest.TestCase):
+    def block(
+        self,
+        invariant_id: str = "inv-block",
+        scope: tuple[str, ...] = ("src",),
+    ) -> Invariant:
+        return make_invariant(
+            invariant_id,
+            InvariantEnforcement.BLOCK,
+            InvariantStatus.ACTIVE,
+            governed_scope=scope,
+        )
+
+    def test_no_match_advise_and_superseded_are_non_blocking(self) -> None:
+        no_match = decide_mutation(
+            make_request(Intent.REQUESTED, MutationRisk.LOW),
+            safe_eval(),
+            make_state(invariants=(self.block(scope=("docs",)),)),
+        )
+        self.assertEqual(no_match.outcome, MutationOutcome.ALLOW)
+        self.assertEqual(no_match.unacknowledged_invariant_ids, ())
+
+        advise = make_invariant(
+            "inv-advise",
+            InvariantEnforcement.ADVISE,
+            InvariantStatus.ACTIVE,
+            governed_scope=("src",),
+        )
+        advised = decide_mutation(
+            make_request(Intent.REQUESTED, MutationRisk.LOW),
+            safe_eval(),
+            make_state(invariants=(advise,)),
+        )
+        self.assertEqual(advised.outcome, MutationOutcome.ALLOW)
+        self.assertEqual(advised.advisory_invariant_ids, ("inv-advise",))
+        self.assertEqual(advised.unacknowledged_invariant_ids, ())
+
+        current = self.block("inv-current", ())
+        old = make_invariant(
+            "inv-old",
+            InvariantEnforcement.BLOCK,
+            InvariantStatus.SUPERSEDED,
+            superseded_by="inv-current",
+            governed_scope=("src",),
+        )
+        superseded = decide_mutation(
+            make_request(Intent.REQUESTED, MutationRisk.LOW),
+            safe_eval(),
+            make_state(invariants=(current, old)),
+        )
+        self.assertEqual(superseded.outcome, MutationOutcome.ALLOW)
+        self.assertEqual(superseded.unacknowledged_invariant_ids, ())
+
+    def test_active_block_requires_trusted_task_acknowledgement(self) -> None:
+        invariant = self.block()
+        unacknowledged = decide_mutation(
+            make_request(Intent.REQUESTED, MutationRisk.LOW),
+            safe_eval(),
+            make_state(invariants=(invariant,)),
+        )
+        self.assertEqual(unacknowledged.outcome, MutationOutcome.BLOCK)
+        self.assertEqual(
+            unacknowledged.reasons,
+            (MutationReason.INVARIANT_UNACKNOWLEDGED,),
+        )
+        self.assertEqual(
+            unacknowledged.unacknowledged_invariant_ids,
+            ("inv-block",),
+        )
+
+        task = make_trusted_task(
+            authorized_scope=(),
+            acknowledged_invariant_ids=("inv-block",),
+        )
+        acknowledged = decide_mutation(
+            make_request(Intent.REQUESTED, MutationRisk.LOW),
+            safe_eval(),
+            make_state(tasks=(task,), invariants=(invariant,)),
+        )
+        self.assertEqual(acknowledged.outcome, MutationOutcome.ALLOW)
+        self.assertEqual(acknowledged.unacknowledged_invariant_ids, ())
+
+    def test_multiple_matches_report_every_unacknowledged_id_sorted(self) -> None:
+        invariants = (self.block("inv-z"), self.block("inv-a"))
+        task = make_trusted_task(
+            authorized_scope=(),
+            acknowledged_invariant_ids=("inv-z",),
+        )
+        decision = decide_mutation(
+            make_request(Intent.REQUESTED, MutationRisk.LOW),
+            safe_eval(),
+            make_state(tasks=(task,), invariants=invariants),
+        )
+        self.assertEqual(decision.outcome, MutationOutcome.BLOCK)
+        self.assertEqual(decision.unacknowledged_invariant_ids, ("inv-a",))
+        self.assertEqual(decision.applicable_invariant_ids, ("inv-a", "inv-z"))
+
+    def test_vab1_authority_and_vab2_block_are_independent(self) -> None:
+        task = make_trusted_task(authorized_scope=("src",))
+        decision = decide_mutation(
+            make_request(Intent.PROPOSED, MutationRisk.NORMAL),
+            safe_eval(),
+            make_state(tasks=(task,), invariants=(self.block(),)),
+        )
+        self.assertEqual(decision.authorizing_task_id, "task-1")
+        self.assertEqual(decision.outcome, MutationOutcome.BLOCK)
+        self.assertNotIn(
+            MutationReason.REQUEST_INTENT_INSUFFICIENT,
+            decision.reasons,
+        )
+        self.assertIn(MutationReason.INVARIANT_UNACKNOWLEDGED, decision.reasons)
+
+    def test_acknowledgement_never_suppresses_asserted_conflict(self) -> None:
+        invariant = self.block()
+        task = make_trusted_task(
+            authorized_scope=(),
+            acknowledged_invariant_ids=("inv-block",),
+        )
+        decision = decide_mutation(
+            make_request(
+                Intent.REQUESTED,
+                MutationRisk.LOW,
+                asserted_conflicting_invariant_ids=("inv-block",),
+            ),
+            safe_eval(),
+            make_state(tasks=(task,), invariants=(invariant,)),
+        )
+        self.assertEqual(decision.outcome, MutationOutcome.BLOCK)
+        self.assertIn(MutationReason.INVARIANT_CONFLICT, decision.reasons)
+        self.assertEqual(decision.conflicting_invariant_ids, ("inv-block",))
+        self.assertEqual(decision.unacknowledged_invariant_ids, ())
+
+    def test_existing_stronger_gates_remain_monotonic(self) -> None:
+        invariant = self.block()
+        task = make_trusted_task(
+            authorized_scope=(),
+            acknowledged_invariant_ids=("inv-block",),
+        )
+        state = make_state(tasks=(task,), invariants=(invariant,))
+        cases = (
+            (
+                make_request(Intent.DENIED, MutationRisk.LOW),
+                safe_eval(),
+                MutationReason.REQUEST_INTENT_DENIED,
+            ),
+            (
+                make_request(Intent.REQUESTED, MutationRisk.CRITICAL),
+                safe_eval(),
+                MutationReason.CRITICAL_RISK,
+            ),
+            (
+                make_request(Intent.REQUESTED, MutationRisk.LOW),
+                protected_eval(),
+                MutationReason.TARGET_PROTECTED,
+            ),
+            (
+                make_request(Intent.REQUESTED, MutationRisk.LOW),
+                unsafe_eval(),
+                MutationReason.TARGET_UNSAFE,
+            ),
+        )
+        for request, evaluation, reason in cases:
+            with self.subTest(reason=reason):
+                decision = decide_mutation(request, evaluation, state)
+                self.assertEqual(decision.outcome, MutationOutcome.BLOCK)
+                self.assertIn(reason, decision.reasons)
+
+        denied_unacknowledged = decide_mutation(
+            make_request(Intent.DENIED, MutationRisk.LOW),
+            safe_eval(),
+            make_state(invariants=(invariant,)),
+        )
+        self.assertEqual(
+            denied_unacknowledged.reasons,
+            (
+                MutationReason.REQUEST_INTENT_DENIED,
+                MutationReason.INVARIANT_UNACKNOWLEDGED,
+            ),
+        )
+
+    def test_missing_or_untrusted_active_task_cannot_acknowledge(self) -> None:
+        invariant = self.block()
+        no_task = decide_mutation(
+            make_request(Intent.REQUESTED, MutationRisk.NORMAL),
+            safe_eval(),
+            make_state(invariants=(invariant,)),
+        )
+        self.assertEqual(no_task.outcome, MutationOutcome.BLOCK)
+        self.assertIn(MutationReason.NO_ACTIVE_TASK, no_task.reasons)
+        self.assertIn(MutationReason.INVARIANT_UNACKNOWLEDGED, no_task.reasons)
+
+        untrusted = make_task(
+            authorized_scope=(),
+            acknowledged_invariant_ids=("inv-block",),
+        )
+        ignored = decide_mutation(
+            make_request(Intent.REQUESTED, MutationRisk.LOW),
+            safe_eval(),
+            make_state(tasks=(untrusted,), invariants=(invariant,)),
+        )
+        self.assertEqual(ignored.outcome, MutationOutcome.BLOCK)
+        self.assertEqual(
+            ignored.unacknowledged_invariant_ids,
+            ("inv-block",),
+        )
+
+    def test_low_requested_match_still_blocks_and_outcome_never_decreases(self) -> None:
+        request = make_request(Intent.REQUESTED, MutationRisk.LOW)
+        baseline = decide_mutation(
+            request,
+            safe_eval(),
+            make_state(invariants=(self.block(scope=()),)),
+        )
+        governed = decide_mutation(
+            request,
+            safe_eval(),
+            make_state(invariants=(self.block(),)),
+        )
+        self.assertEqual(baseline.outcome, MutationOutcome.ALLOW)
+        self.assertEqual(governed.outcome, MutationOutcome.BLOCK)
+
+    def test_incompatible_or_malformed_state_never_reaches_scope_matching(self) -> None:
+        invariant = self.block()
+        foreign = (
+            ScopePathSemantics.CASE_SENSITIVE
+            if host_scope_semantics() is ScopePathSemantics.CASE_FOLDED
+            else ScopePathSemantics.CASE_FOLDED
+        )
+        incompatible = replace(
+            make_state(invariants=(invariant,)),
+            scope_semantics=foreign,
+        )
+        with mock.patch(
+            "evidline.mutation._paths.canonical_target_in_authorized_scope"
+        ) as matcher:
+            with self.assertRaises(MutationInputError):
+                decide_mutation(
+                    make_request(Intent.REQUESTED, MutationRisk.LOW),
+                    safe_eval(),
+                    incompatible,
+                )
+        matcher.assert_not_called()
+
+        malformed_task = make_trusted_task(
+            authorized_scope=(),
+            acknowledged_invariant_ids=("inv-missing",),
+        )
+        with self.assertRaises(MutationInputError):
+            decide_mutation(
+                make_request(Intent.REQUESTED, MutationRisk.LOW),
+                safe_eval(),
+                make_state(tasks=(malformed_task,), invariants=(invariant,)),
+            )
+
+    def test_vab2_ids_and_rendering_are_deterministic_and_distinct(self) -> None:
+        invariants = (self.block("inv-z"), self.block("inv-a"))
+        request = make_request(Intent.DENIED, MutationRisk.LOW)
+        first = decide_mutation(
+            request,
+            safe_eval(),
+            make_state(invariants=invariants),
+        )
+        second = decide_mutation(
+            request,
+            safe_eval(),
+            make_state(invariants=invariants),
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(first.unacknowledged_invariant_ids, ("inv-a", "inv-z"))
+        self.assertEqual(first.conflicting_invariant_ids, ())
+        self.assertIn(
+            "unacknowledged_invariant_ids: [inv-a, inv-z]",
+            explain(first),
+        )
+        self.assertEqual(
+            json.loads(render_decision_json(first))[
+                "unacknowledged_invariant_ids"
+            ],
+            ["inv-a", "inv-z"],
+        )
+
+
 class SemanticSeparationTests(unittest.TestCase):
     def test_execution_executed_never_authorizes(self) -> None:
         decision = make_decision(Intent.REQUESTED, execution=Execution.EXECUTED)
@@ -1177,6 +1466,11 @@ class RefusalReportingTests(unittest.TestCase):
                 "An asserted invariant id does not resolve; supply an existing "
                 "invariant id."
             ),
+            MutationReason.INVARIANT_UNACKNOWLEDGED: (
+                "A relevant ACTIVE BLOCK invariant is not acknowledged by the "
+                "ACTIVE task; a human must acknowledge that invariant on the "
+                "ACTIVE task, or choose a target outside its governed scope."
+            ),
             MutationReason.SCOPE_VIOLATION: (
                 "Target is outside the declared scope; narrow the target or declare "
                 "a scope inside the project root."
@@ -1214,6 +1508,22 @@ class RefusalReportingTests(unittest.TestCase):
             ),
             "Target is protected project metadata; choose a target outside "
             ".git and .evidline.",
+        )
+
+    def test_unacknowledged_priority_is_after_unresolved_before_scope(self) -> None:
+        reasons = (
+            MutationReason.SCOPE_VIOLATION,
+            MutationReason.INVARIANT_UNACKNOWLEDGED,
+        )
+        self.assertEqual(
+            _select_next_step(reasons),
+            _select_next_step((MutationReason.INVARIANT_UNACKNOWLEDGED,)),
+        )
+        self.assertEqual(
+            _select_next_step(
+                reasons + (MutationReason.INVARIANT_UNRESOLVED,)
+            ),
+            _select_next_step((MutationReason.INVARIANT_UNRESOLVED,)),
         )
 
     def test_target_renders_for_text_and_json_including_none(self) -> None:
@@ -1264,11 +1574,27 @@ class PurityTests(unittest.TestCase):
             protected = decide_mutation(
                 protected_request, protected_eval(".git"), make_state()
             )
+            governed = decide_mutation(
+                make_request(Intent.REQUESTED, MutationRisk.LOW),
+                safe_eval(),
+                make_state(
+                    invariants=(
+                        make_invariant(
+                            "inv-block",
+                            InvariantEnforcement.BLOCK,
+                            InvariantStatus.ACTIVE,
+                            governed_scope=("src",),
+                        ),
+                    )
+                ),
+            )
         self.assertEqual(scoped.outcome, MutationOutcome.ALLOW)
         self.assertEqual(derived.outcome, MutationOutcome.ALLOW)
         self.assertEqual(derived.authorizing_task_id, "task-1")
         self.assertEqual(protected.outcome, MutationOutcome.BLOCK)
         self.assertIn(MutationReason.TARGET_PROTECTED, protected.reasons)
+        self.assertEqual(governed.outcome, MutationOutcome.BLOCK)
+        self.assertIn(MutationReason.INVARIANT_UNACKNOWLEDGED, governed.reasons)
         stat.assert_not_called()
         listdir.assert_not_called()
         scandir.assert_not_called()
@@ -1281,8 +1607,8 @@ class PurityTests(unittest.TestCase):
 
 
 class SchemaAndValidationTests(unittest.TestCase):
-    def test_schema_version_is_one(self) -> None:
-        self.assertEqual(MUTATION_SCHEMA_VERSION, 1)
+    def test_schema_version_is_two(self) -> None:
+        self.assertEqual(MUTATION_SCHEMA_VERSION, 2)
 
     def test_invalid_request_type_raises(self) -> None:
         with self.assertRaises(MutationInputError):

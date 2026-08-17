@@ -7,7 +7,7 @@ non-cooperating writers, or mutations outside Evidline hook coverage.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import json
 import os
@@ -20,7 +20,7 @@ from typing import Any, Final, Mapping, NoReturn
 from evidline import paths as _paths
 
 
-SCHEMA_VERSION: Final = 2
+SCHEMA_VERSION: Final = 3
 STATE_DIRECTORY: Final = ".evidline"
 STATE_FILENAME: Final = "state.json"
 LOCK_FILENAME: Final = ".state.lock"
@@ -104,6 +104,7 @@ class Invariant:
     approved_at: str | None = None
     approval_channel: str | None = None
     asserted_actor: str | None = None
+    governed_scope: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +130,7 @@ class Task:
     approved_at: str | None = None
     approval_channel: str | None = None
     asserted_actor: str | None = None
+    acknowledged_invariant_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +166,9 @@ class StateDocument:
     claims: tuple[Claim, ...]
     evidence: tuple[Evidence, ...]
     counters: Mapping[str, int]
+    scope_semantics: _paths.ScopePathSemantics = field(
+        default_factory=_paths.host_scope_semantics
+    )
 
 
 class StateError(Exception):
@@ -180,6 +185,10 @@ class StateAlreadyInitializedError(StateError):
 
 class StateValidationError(StateError):
     """The complete state document is structurally invalid."""
+
+
+class IncompatibleScopeSemanticsError(StateValidationError):
+    """Persisted non-empty scopes use a foreign normalization discipline."""
 
 
 class StateJSONError(StateValidationError):
@@ -243,6 +252,7 @@ def initialize_project(
         claims=(),
         evidence=(),
         counters={},
+        scope_semantics=_paths.host_scope_semantics(),
     )
     payload = serialize_state(document).encode("utf-8")
 
@@ -286,6 +296,25 @@ def get_state_path(project_root: str | os.PathLike[str]) -> Path:
     return state_path
 
 
+def _incompatible_scope_semantics(
+    state: StateDocument,
+    host_semantics: _paths.ScopePathSemantics,
+) -> bool:
+    """Return whether non-empty persisted scopes cannot be read on this host."""
+
+    if state.scope_semantics is host_semantics:
+        return False
+    tasks = state.tasks if isinstance(state.tasks, tuple) else ()
+    invariants = state.invariants if isinstance(state.invariants, tuple) else ()
+    return any(
+        type(task) is Task and bool(task.authorized_scope)
+        for task in tasks
+    ) or any(
+        type(invariant) is Invariant and bool(invariant.governed_scope)
+        for invariant in invariants
+    )
+
+
 def validate_state(state: StateDocument) -> None:
     """Fully validate a typed state document, failing closed on any defect."""
 
@@ -296,6 +325,15 @@ def validate_state(state: StateDocument) -> None:
     if state.schema_version != SCHEMA_VERSION:
         raise UnsupportedSchemaError(f"unsupported schema_version: {state.schema_version}")
     _non_negative_integer(state.revision, "revision")
+    _enum_instance(
+        state.scope_semantics,
+        _paths.ScopePathSemantics,
+        "scope_semantics",
+    )
+    if _incompatible_scope_semantics(state, _paths.host_scope_semantics()):
+        raise IncompatibleScopeSemanticsError(
+            "scope_semantics is incompatible with non-empty persisted scopes"
+        )
     _validate_project(state.project)
 
     collections: tuple[tuple[str, tuple[Any, ...], type[Any], str], ...] = (
@@ -515,6 +553,14 @@ def _state_locations(
 def _state_from_object(raw: Any) -> StateDocument:
     if not isinstance(raw, dict):
         _invalid("top-level state must be an object")
+    if "schema_version" in raw:
+        schema_version = raw["schema_version"]
+        if type(schema_version) is not int:
+            _invalid("schema_version must be an integer")
+        if schema_version != SCHEMA_VERSION:
+            raise UnsupportedSchemaError(
+                f"unsupported schema_version: {schema_version}"
+            )
     expected = {
         "schema_version",
         "revision",
@@ -525,13 +571,10 @@ def _state_from_object(raw: Any) -> StateDocument:
         "claims",
         "evidence",
         "counters",
+        "scope_semantics",
     }
     _exact_keys(raw, expected, "state")
     schema_version = raw["schema_version"]
-    if type(schema_version) is not int:
-        _invalid("schema_version must be an integer")
-    if schema_version != SCHEMA_VERSION:
-        raise UnsupportedSchemaError(f"unsupported schema_version: {schema_version}")
 
     state = StateDocument(
         schema_version=schema_version,
@@ -557,6 +600,11 @@ def _state_from_object(raw: Any) -> StateDocument:
             for value in _object_list(raw["evidence"], "evidence")
         ),
         counters=_counter_object(raw["counters"]),
+        scope_semantics=_enum(
+            _paths.ScopePathSemantics,
+            raw["scope_semantics"],
+            "scope_semantics",
+        ),
     )
     validate_state(state)
     return state
@@ -584,6 +632,7 @@ def _invariant_from_object(raw: Any) -> Invariant:
         {
             "id", "description", "enforcement", "status", "superseded_by",
             "approved_at", "approval_channel", "asserted_actor",
+            "governed_scope",
         },
         "invariant",
     )
@@ -596,6 +645,7 @@ def _invariant_from_object(raw: Any) -> Invariant:
         approved_at=_optional_string(value["approved_at"], "approved_at"),
         approval_channel=_optional_string(value["approval_channel"], "approval_channel"),
         asserted_actor=_optional_string(value["asserted_actor"], "asserted_actor"),
+        governed_scope=_string_tuple(value["governed_scope"], "governed_scope"),
     )
 
 
@@ -625,6 +675,7 @@ def _task_from_object(raw: Any) -> Task:
             "id", "description", "status", "intent", "execution",
             "related_ids", "authorized_scope", "approved_at",
             "approval_channel", "asserted_actor",
+            "acknowledged_invariant_ids",
         },
         "task",
     )
@@ -641,6 +692,10 @@ def _task_from_object(raw: Any) -> Task:
         approved_at=_optional_string(value["approved_at"], "approved_at"),
         approval_channel=_optional_string(value["approval_channel"], "approval_channel"),
         asserted_actor=_optional_string(value["asserted_actor"], "asserted_actor"),
+        acknowledged_invariant_ids=_string_tuple(
+            value["acknowledged_invariant_ids"],
+            "acknowledged_invariant_ids",
+        ),
     )
 
 
@@ -693,6 +748,7 @@ def _state_to_dict(state: StateDocument) -> dict[str, Any]:
         "claims": [_record_to_dict(item) for item in state.claims],
         "evidence": [_record_to_dict(item) for item in state.evidence],
         "counters": dict(state.counters),
+        "scope_semantics": state.scope_semantics.value,
     }
 
 
@@ -727,6 +783,7 @@ def _validate_invariant(item: Invariant, invariant_ids: set[str]) -> None:
     _enum_instance(item.status, InvariantStatus, "status")
     _optional_string(item.superseded_by, f"{item.id}.superseded_by")
     _metadata_strings(item.approved_at, item.approval_channel, item.asserted_actor)
+    _validate_scope_tuple(item.id, "governed_scope", item.governed_scope)
     if item.status is InvariantStatus.SUPERSEDED:
         if item.superseded_by is None or item.superseded_by not in invariant_ids:
             _invalid(f"{item.id} has an unresolved superseded_by reference")
@@ -757,7 +814,8 @@ def _validate_task(item: Task, all_records: Mapping[str, Any]) -> None:
         _non_empty_string(related_id, f"{item.id}.related_ids item")
         if related_id not in all_records:
             _invalid(f"{item.id} has unresolved related id: {related_id}")
-    _validate_authorized_scope(item)
+    _validate_scope_tuple(item.id, "authorized_scope", item.authorized_scope)
+    _validate_acknowledged_invariant_ids(item, all_records)
     _metadata_strings(item.approved_at, item.approval_channel, item.asserted_actor)
     if item.status is TaskStatus.ACTIVE:
         if item.intent is not Intent.AUTHORIZED:
@@ -765,22 +823,55 @@ def _validate_task(item: Task, all_records: Mapping[str, Any]) -> None:
         _required_transition_metadata(item.id, item.approved_at, item.approval_channel)
 
 
-def _validate_authorized_scope(item: Task) -> None:
-    if not isinstance(item.authorized_scope, tuple):
-        _invalid(f"{item.id}.authorized_scope must be a tuple")
+def _validate_scope_tuple(
+    record_id: str,
+    field_name: str,
+    values: tuple[str, ...],
+) -> None:
+    if not isinstance(values, tuple):
+        _invalid(f"{record_id}.{field_name} must be a tuple")
     seen: set[str] = set()
-    for scope in item.authorized_scope:
+    for scope in values:
         try:
             normalized = _paths.normalize_root_relative_scope(scope)
         except ValueError as exc:
-            _invalid(f"{item.id}.authorized_scope invalid: {exc}")
+            _invalid(f"{record_id}.{field_name} invalid: {exc}")
         if normalized != scope:
             _invalid(
-                f"{item.id}.authorized_scope entries must be normalized: {scope}"
+                f"{record_id}.{field_name} entries must be normalized: {scope}"
             )
         if scope in seen:
-            _invalid(f"{item.id}.authorized_scope contains duplicate: {scope}")
+            _invalid(f"{record_id}.{field_name} contains duplicate: {scope}")
         seen.add(scope)
+
+
+def _validate_acknowledged_invariant_ids(
+    item: Task,
+    all_records: Mapping[str, Any],
+) -> None:
+    values = item.acknowledged_invariant_ids
+    if not isinstance(values, tuple):
+        _invalid(f"{item.id}.acknowledged_invariant_ids must be a tuple")
+    seen: set[str] = set()
+    for invariant_id in values:
+        _non_empty_string(
+            invariant_id,
+            f"{item.id}.acknowledged_invariant_ids item",
+        )
+        if invariant_id in seen:
+            _invalid(
+                f"{item.id}.acknowledged_invariant_ids contains duplicate: "
+                f"{invariant_id}"
+            )
+        record = all_records.get(invariant_id)
+        if record is None:
+            _invalid(f"{item.id} has unresolved invariant id: {invariant_id}")
+        if type(record) is not Invariant:
+            _invalid(
+                f"{item.id} acknowledgement does not resolve to an Invariant: "
+                f"{invariant_id}"
+            )
+        seen.add(invariant_id)
 
 
 def _validate_claim(item: Claim, evidence_by_id: Mapping[str, Evidence]) -> None:

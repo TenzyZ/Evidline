@@ -37,7 +37,7 @@ from evidline.state import (
 )
 
 
-MUTATION_SCHEMA_VERSION: Final = 1
+MUTATION_SCHEMA_VERSION: Final = 2
 
 
 class MutationOperation(str, Enum):
@@ -74,6 +74,7 @@ class MutationReason(str, Enum):
     INSUFFICIENT_AUTHORIZATION = "INSUFFICIENT_AUTHORIZATION"
     INVARIANT_CONFLICT = "INVARIANT_CONFLICT"
     INVARIANT_UNRESOLVED = "INVARIANT_UNRESOLVED"
+    INVARIANT_UNACKNOWLEDGED = "INVARIANT_UNACKNOWLEDGED"
     HIGH_EVIDENCE_INSUFFICIENT = "HIGH_EVIDENCE_INSUFFICIENT"
 
 
@@ -104,6 +105,7 @@ class MutationDecision:
     advisory_invariant_ids: tuple[str, ...]
     applicable_invariant_ids: tuple[str, ...]
     authorizing_task_id: str | None = None
+    unacknowledged_invariant_ids: tuple[str, ...] = ()
 
 
 _RISK_ORDER: Final = {
@@ -135,6 +137,7 @@ _NEXT_STEP_PRIORITY: Final = (
     MutationReason.CRITICAL_RISK,
     MutationReason.INVARIANT_CONFLICT,
     MutationReason.INVARIANT_UNRESOLVED,
+    MutationReason.INVARIANT_UNACKNOWLEDGED,
     MutationReason.SCOPE_VIOLATION,
     MutationReason.NO_ACTIVE_TASK,
     MutationReason.INSUFFICIENT_AUTHORIZATION,
@@ -162,6 +165,11 @@ _NEXT_STEP_TEXT: Final = {
     ),
     MutationReason.INVARIANT_UNRESOLVED: (
         "An asserted invariant id does not resolve; supply an existing invariant id."
+    ),
+    MutationReason.INVARIANT_UNACKNOWLEDGED: (
+        "A relevant ACTIVE BLOCK invariant is not acknowledged by the ACTIVE "
+        "task; a human must acknowledge that invariant on the ACTIVE task, or "
+        "choose a target outside its governed scope."
     ),
     MutationReason.SCOPE_VIOLATION: (
         "Target is outside the declared scope; narrow the target or declare a "
@@ -283,6 +291,7 @@ def decide_mutation(
     applicable_ids, advisory_ids = _classify_invariants(state)
     advisory_set: set[str] = set(advisory_ids)
     conflicting_ids: list[str] = []
+    unacknowledged_ids: list[str] = []
     for invariant_id in sorted(set(request.asserted_conflicting_invariant_ids)):
         invariant = _invariant_by_id(state, invariant_id)
         if invariant is None:
@@ -295,6 +304,35 @@ def decide_mutation(
         else:
             conflicting_ids.append(invariant_id)
             escalate(MutationReason.INVARIANT_CONFLICT)
+            outcome = _max_outcome(outcome, MutationOutcome.BLOCK)
+
+    # VAB-2 structural target relevance.  Acknowledgement records awareness;
+    # it never suppresses caller-asserted conflicts or any earlier gate.
+    if (
+        evaluation.safe
+        and evaluation.canonical_root is not None
+        and evaluation.canonical_target is not None
+    ):
+        acknowledged_ids = (
+            set(active_task.acknowledged_invariant_ids)
+            if _is_trusted_active_task(active_task)
+            else set()
+        )
+        for invariant in state.invariants:
+            if (
+                invariant.status is InvariantStatus.ACTIVE
+                and invariant.enforcement is InvariantEnforcement.BLOCK
+                and invariant.governed_scope
+                and _paths.canonical_target_in_authorized_scope(
+                    evaluation.canonical_root,
+                    evaluation.canonical_target,
+                    invariant.governed_scope,
+                )
+                and invariant.id not in acknowledged_ids
+            ):
+                unacknowledged_ids.append(invariant.id)
+        if unacknowledged_ids:
+            escalate(MutationReason.INVARIANT_UNACKNOWLEDGED)
             outcome = _max_outcome(outcome, MutationOutcome.BLOCK)
 
     if outcome is MutationOutcome.ALLOW:
@@ -319,6 +357,9 @@ def decide_mutation(
         applicable_invariant_ids=tuple(sorted(applicable_ids)),
         authorizing_task_id=(
             authorizing_task.id if authorizing_task is not None else None
+        ),
+        unacknowledged_invariant_ids=tuple(
+            sorted(set(unacknowledged_ids))
         ),
     )
 
@@ -364,6 +405,8 @@ def explain(decision: MutationDecision) -> str:
         f"authorizing_task_id: {authorizing_task_id}\n"
         f"reasons: {reasons}\n"
         f"conflicting_invariant_ids: {_render_ids(decision.conflicting_invariant_ids)}\n"
+        f"unacknowledged_invariant_ids: "
+        f"{_render_ids(decision.unacknowledged_invariant_ids)}\n"
         f"advisory_invariant_ids: {_render_ids(decision.advisory_invariant_ids)}\n"
         f"applicable_invariant_ids: {_render_ids(decision.applicable_invariant_ids)}\n"
         f"next_step: {decision.next_step}"
@@ -383,6 +426,9 @@ def render_decision_json(decision: MutationDecision) -> str:
         "reasons": [reason.value for reason in decision.reasons],
         "next_step": decision.next_step,
         "conflicting_invariant_ids": list(decision.conflicting_invariant_ids),
+        "unacknowledged_invariant_ids": list(
+            decision.unacknowledged_invariant_ids
+        ),
         "advisory_invariant_ids": list(decision.advisory_invariant_ids),
         "applicable_invariant_ids": list(decision.applicable_invariant_ids),
     }
@@ -423,6 +469,19 @@ def _active_task(state: StateDocument) -> Task | None:
     return None
 
 
+def _is_trusted_active_task(task: Task | None) -> bool:
+    """Return whether one Task carries the existing trusted ACTIVE provenance."""
+
+    return (
+        task is not None
+        and task.status is TaskStatus.ACTIVE
+        and task.intent is Intent.AUTHORIZED
+        and bool(task.approved_at)
+        and task.approval_channel == _state.TRUSTED_APPROVAL_CHANNEL
+        and task.asserted_actor == _state.TRUSTED_ASSERTED_ACTOR
+    )
+
+
 def _derived_authorizing_task(
     request: MutationRequest,
     evaluation: PathEvaluation,
@@ -432,14 +491,10 @@ def _derived_authorizing_task(
 
     if request.request_intent is not Intent.PROPOSED:
         return None
-    if not evaluation.safe or active_task is None:
+    if not evaluation.safe or not _is_trusted_active_task(active_task):
         return None
     if (
-        active_task.status is not TaskStatus.ACTIVE
-        or active_task.intent is not Intent.AUTHORIZED
-        or not active_task.approved_at
-        or active_task.approval_channel != _state.TRUSTED_APPROVAL_CHANNEL
-        or active_task.asserted_actor != _state.TRUSTED_ASSERTED_ACTOR
+        active_task is None
         or not active_task.authorized_scope
         or evaluation.canonical_root is None
         or evaluation.canonical_target is None

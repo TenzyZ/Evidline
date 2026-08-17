@@ -25,6 +25,9 @@ from evidline.mutation import (
 from evidline.state import (
     Execution,
     Intent,
+    Invariant,
+    InvariantEnforcement,
+    InvariantStatus,
     Project,
     StateDocument,
     StateIOError,
@@ -44,6 +47,7 @@ def make_state(
     active_task: bool = False,
     authorized_scope: tuple[str, ...] = (),
     trusted: bool = False,
+    governed_scope: tuple[str, ...] = (),
 ) -> StateDocument:
     tasks: tuple[Task, ...] = ()
     if active_task:
@@ -62,8 +66,21 @@ def make_state(
                 asserted_actor=TRUSTED_ASSERTED_ACTOR if trusted else None,
             ),
         )
+    invariants = (
+        (
+            Invariant(
+                id="inv-governed",
+                description="Governed adapter target",
+                enforcement=InvariantEnforcement.BLOCK,
+                status=InvariantStatus.ACTIVE,
+                governed_scope=governed_scope,
+            ),
+        )
+        if governed_scope
+        else ()
+    )
     return StateDocument(
-        schema_version=2,
+        schema_version=3,
         revision=0,
         project=Project(
             name="Evidline",
@@ -71,7 +88,7 @@ def make_state(
             ignore_globs=(),
             default_budget_chars=default_budget_chars,
         ),
-        invariants=(),
+        invariants=invariants,
         decisions=(),
         tasks=tasks,
         claims=(),
@@ -542,6 +559,27 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual((code, stderr), (0, ""))
         self.assertEqual(
             self.permission_output(stdout)["permissionDecision"], "ask"
+        )
+
+    def test_real_governed_block_is_transported_as_claude_deny(self) -> None:
+        self.write_state(
+            make_state(
+                active_task=True,
+                authorized_scope=("src",),
+                trusted=True,
+                governed_scope=("src",),
+            )
+        )
+        code, stdout, stderr = self.invoke(
+            "pre-tool-use",
+            self.tool_payload(target="src/file.py"),
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        output = self.permission_output(stdout)
+        self.assertEqual(output["permissionDecision"], "deny")
+        self.assertIn(
+            MutationReason.INVARIANT_UNACKNOWLEDGED.value,
+            str(output["permissionDecisionReason"]),
         )
 
     def test_real_covered_policy_matrix_never_emits_silence(self) -> None:

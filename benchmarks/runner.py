@@ -133,6 +133,42 @@ def _scoped_authority_state(
     return replace(fixture.state, tasks=tasks)
 
 
+def _governed_state(
+    fixture: BenchmarkFixture,
+    *,
+    governed_scopes: Mapping[str, tuple[str, ...]],
+    acknowledged_invariant_ids: tuple[str, ...] = (),
+    authorized_scope: tuple[str, ...] = ("src",),
+    trusted: bool = True,
+) -> StateDocument:
+    """Build one isolated VAB-2 state without changing the shared fixture."""
+
+    invariants = tuple(
+        replace(
+            invariant,
+            governed_scope=governed_scopes.get(invariant.id, ()),
+        )
+        for invariant in fixture.state.invariants
+    )
+    tasks = tuple(
+        replace(
+            task,
+            authorized_scope=authorized_scope,
+            approval_channel=(
+                TRUSTED_APPROVAL_CHANNEL if trusted else "benchmark-untrusted"
+            ),
+            asserted_actor=(
+                TRUSTED_ASSERTED_ACTOR if trusted else "benchmark-operator"
+            ),
+            acknowledged_invariant_ids=acknowledged_invariant_ids,
+        )
+        if task.status is TaskStatus.ACTIVE
+        else task
+        for task in fixture.state.tasks
+    )
+    return replace(fixture.state, invariants=invariants, tasks=tasks)
+
+
 def _invoke(
     adapter: Any,
     command: str,
@@ -320,7 +356,7 @@ def _scenario_core(fixture: BenchmarkFixture, scenario_id: str) -> dict[str, Any
                 fixture,
                 target,
                 _request(),
-                state=replace(fixture.state, schema_version=3),
+                state=replace(fixture.state, schema_version=4),
             )
         except MutationInputError as error:
             return {"exception": type(error).__name__, "message": str(error)}
@@ -348,6 +384,191 @@ def _scenario_core(fixture: BenchmarkFixture, scenario_id: str) -> dict[str, Any
         result = _basic_decision(decision)
         result["authorizing_task_id"] = decision.authorizing_task_id
         return result
+    governed_target = fixture.target("src/governed/app.py")
+    if scenario_id == "core.governed_scope_authorized_allow":
+        selected_state = _governed_state(
+            fixture,
+            governed_scopes={"inv-block": ("docs",)},
+        )
+        decision = _decision(
+            fixture,
+            governed_target,
+            _request(intent=Intent.PROPOSED),
+            state=selected_state,
+        )
+        result = _basic_decision(decision)
+        result["authorizing_task_id"] = decision.authorizing_task_id
+        return result
+    if scenario_id in (
+        "core.governed_block_unacknowledged",
+        "core.governed_block_acknowledged",
+    ):
+        acknowledged = scenario_id == "core.governed_block_acknowledged"
+        selected_state = _governed_state(
+            fixture,
+            governed_scopes={"inv-block": ("src/governed",)},
+            acknowledged_invariant_ids=("inv-block",) if acknowledged else (),
+        )
+        decision = _decision(
+            fixture,
+            governed_target,
+            _request(intent=Intent.PROPOSED),
+            state=selected_state,
+        )
+        result = _basic_decision(decision)
+        result["unacknowledged"] = list(
+            decision.unacknowledged_invariant_ids
+        )
+        result["authorizing_task_id"] = decision.authorizing_task_id
+        return result
+    if scenario_id == "core.governed_advise_relevant":
+        selected_state = _governed_state(
+            fixture,
+            governed_scopes={"inv-advise": ("src/governed",)},
+        )
+        decision = _decision(
+            fixture,
+            governed_target,
+            _request(intent=Intent.PROPOSED),
+            state=selected_state,
+        )
+        result = _basic_decision(decision)
+        result["advisory"] = list(decision.advisory_invariant_ids)
+        return result
+    if scenario_id == "core.governed_superseded_relevant":
+        selected_state = _governed_state(
+            fixture,
+            governed_scopes={"inv-superseded": ("src/governed",)},
+        )
+        decision = _decision(
+            fixture,
+            governed_target,
+            _request(intent=Intent.PROPOSED),
+            state=selected_state,
+        )
+        result = _basic_decision(decision)
+        result["unacknowledged"] = list(
+            decision.unacknowledged_invariant_ids
+        )
+        return result
+    if scenario_id in (
+        "core.governed_multiple_block",
+        "core.governed_mixed_acknowledgement",
+    ):
+        mixed = scenario_id == "core.governed_mixed_acknowledgement"
+        selected_state = _governed_state(
+            fixture,
+            governed_scopes={
+                "inv-block": ("src/governed",),
+                "inv-current": ("src/governed",),
+            },
+            acknowledged_invariant_ids=("inv-block",) if mixed else (),
+        )
+        decision = _decision(
+            fixture,
+            governed_target,
+            _request(intent=Intent.REQUESTED),
+            state=selected_state,
+        )
+        result = _basic_decision(decision)
+        result["unacknowledged"] = list(
+            decision.unacknowledged_invariant_ids
+        )
+        return result
+    if scenario_id == "core.governed_outside_scope":
+        selected_state = _governed_state(
+            fixture,
+            governed_scopes={"inv-block": ("docs",)},
+        )
+        decision = _decision(
+            fixture,
+            governed_target,
+            _request(intent=Intent.REQUESTED, risk=MutationRisk.LOW),
+            state=selected_state,
+        )
+        result = _basic_decision(decision)
+        result["unacknowledged"] = list(
+            decision.unacknowledged_invariant_ids
+        )
+        return result
+    if scenario_id == "core.governed_untrusted_acknowledgement":
+        selected_state = _governed_state(
+            fixture,
+            governed_scopes={"inv-block": ("src/governed",)},
+            acknowledged_invariant_ids=("inv-block",),
+            trusted=False,
+        )
+        decision = _decision(
+            fixture,
+            governed_target,
+            _request(intent=Intent.PROPOSED),
+            state=selected_state,
+        )
+        result = _basic_decision(decision)
+        result["unacknowledged"] = list(
+            decision.unacknowledged_invariant_ids
+        )
+        result["authorizing_task_id"] = decision.authorizing_task_id
+        return result
+    if scenario_id == (
+        "core.governed_acknowledgement_does_not_suppress_asserted_conflict"
+    ):
+        selected_state = _governed_state(
+            fixture,
+            governed_scopes={"inv-block": ("src/governed",)},
+            acknowledged_invariant_ids=("inv-block",),
+        )
+        decision = _decision(
+            fixture,
+            governed_target,
+            _request(
+                intent=Intent.PROPOSED,
+                asserted_invariant_ids=("inv-block",),
+            ),
+            state=selected_state,
+        )
+        result = _basic_decision(decision)
+        result["conflicting"] = list(decision.conflicting_invariant_ids)
+        result["unacknowledged"] = list(
+            decision.unacknowledged_invariant_ids
+        )
+        return result
+    if scenario_id == "core.malformed_governed_scope":
+        selected_state = _governed_state(
+            fixture,
+            governed_scopes={"inv-block": ("src/",)},
+        )
+        try:
+            _decision(
+                fixture,
+                governed_target,
+                _request(),
+                state=selected_state,
+            )
+        except MutationInputError as error:
+            return {"exception": type(error).__name__, "message": str(error)}
+        return {"exception": None, "message": ""}
+    if scenario_id == "core.incompatible_scope_semantics":
+        selected_state = _governed_state(
+            fixture,
+            governed_scopes={"inv-block": ("src/governed",)},
+        )
+        foreign = (
+            paths.ScopePathSemantics.CASE_SENSITIVE
+            if paths.host_scope_semantics()
+            is paths.ScopePathSemantics.CASE_FOLDED
+            else paths.ScopePathSemantics.CASE_FOLDED
+        )
+        try:
+            _decision(
+                fixture,
+                governed_target,
+                _request(),
+                state=replace(selected_state, scope_semantics=foreign),
+            )
+        except MutationInputError as error:
+            return {"exception": type(error).__name__, "message": str(error)}
+        return {"exception": None, "message": ""}
     raise KeyError(scenario_id)
 
 
@@ -496,6 +717,27 @@ def _scenario_claude(fixture: BenchmarkFixture, scenario_id: str) -> dict[str, A
             "exit": code,
             "adapter_silent": stdout == "" and stderr == "" and output is None,
         }
+    if scenario_id == "claude.governed_block_unacknowledged":
+        selected_state = _governed_state(
+            fixture,
+            governed_scopes={"inv-block": ("src/governed",)},
+        )
+        fixture.write_state(selected_state)
+        try:
+            code, _, _, output = _claude_result(
+                fixture,
+                "Edit",
+                fixture.target("src/governed/app.py"),
+            )
+        finally:
+            fixture.write_state()
+        reason = str(output["permissionDecisionReason"])
+        return {
+            "exit": code,
+            "permission": output["permissionDecision"],
+            "policy": _policy_from_reason(reason),
+            "contains_unacknowledged": "INVARIANT_UNACKNOWLEDGED" in reason,
+        }
     if scenario_id == "claude.protected_mutation":
         code, _, _, output = _claude_result(fixture, "Edit", fixture.target(".git/config"))
         reason = str(output["permissionDecisionReason"])
@@ -541,6 +783,28 @@ def _scenario_codex(fixture: BenchmarkFixture, scenario_id: str) -> dict[str, An
             "authorizing_task_id": decision.authorizing_task_id,
             "exit": code,
             "adapter_silent": stdout == "" and stderr == "" and output is None,
+        }
+    if scenario_id == "codex.governed_block_unacknowledged":
+        selected_state = _governed_state(
+            fixture,
+            governed_scopes={"inv-block": ("src/governed",)},
+        )
+        governed_patch = _patch(
+            "*** Update File: src/governed/app.py",
+            "@@",
+            "+VALUE = 2",
+        )
+        fixture.write_state(selected_state)
+        try:
+            code, _, _, output = _codex_result(fixture, governed_patch)
+        finally:
+            fixture.write_state()
+        reason = str(output["permissionDecisionReason"])
+        return {
+            "exit": code,
+            "permission": output["permissionDecision"],
+            "policy": _policy_from_reason(reason),
+            "contains_unacknowledged": "INVARIANT_UNACKNOWLEDGED" in reason,
         }
     if scenario_id == "codex.mixed_apply_patch":
         mixed = _patch(
@@ -656,6 +920,41 @@ def _scenario_cross(fixture: BenchmarkFixture, scenario_id: str) -> dict[str, An
         claude_policy = _policy_from_reason(str(claude_output["permissionDecisionReason"]))
         codex_policy = _policy_from_reason(str(codex_output["permissionDecisionReason"]))
         return {"claude_policy": claude_policy, "codex_policy": codex_policy, "claude_transport": claude_output["permissionDecision"], "codex_transport": codex_output["permissionDecision"], "identical_policy": claude_policy == codex_policy}
+    if scenario_id == "cross.governed_block_parity":
+        selected_state = _governed_state(
+            fixture,
+            governed_scopes={"inv-block": ("src/governed",)},
+        )
+        governed_patch = _patch(
+            "*** Update File: src/governed/app.py",
+            "@@",
+            "+VALUE = 2",
+        )
+        fixture.write_state(selected_state)
+        try:
+            claude_output = _claude_result(
+                fixture,
+                "Edit",
+                fixture.target("src/governed/app.py"),
+            )[3]
+            codex_output = _codex_result(fixture, governed_patch)[3]
+        finally:
+            fixture.write_state()
+        claude_reason = str(claude_output["permissionDecisionReason"])
+        codex_reason = str(codex_output["permissionDecisionReason"])
+        claude_policy = _policy_from_reason(claude_reason)
+        codex_policy = _policy_from_reason(codex_reason)
+        return {
+            "claude_policy": claude_policy,
+            "codex_policy": codex_policy,
+            "claude_transport": claude_output["permissionDecision"],
+            "codex_transport": codex_output["permissionDecision"],
+            "identical_policy": claude_policy == codex_policy,
+            "contains_unacknowledged": (
+                "INVARIANT_UNACKNOWLEDGED" in claude_reason
+                and "INVARIANT_UNACKNOWLEDGED" in codex_reason
+            ),
+        }
     if scenario_id == "cross.failure_parity":
         fixture.write_invalid_state()
         try:

@@ -97,6 +97,11 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         metavar="ROOT_RELATIVE_PATH",
     )
+    approve_parser.add_argument(
+        "--acknowledge",
+        action="append",
+        metavar="INVARIANT_ID",
+    )
     approve_parser.add_argument("--root", metavar="PATH")
 
     context_parser = subparsers.add_parser(
@@ -230,6 +235,27 @@ def _run_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_acknowledgements(
+    acknowledged_ids: tuple[str, ...],
+    invariants_by_id: dict[str, state.Invariant],
+) -> None:
+    print("acknowledged_invariant_ids:")
+    if not acknowledged_ids:
+        print("- (none)")
+        return
+    for invariant_id in acknowledged_ids:
+        invariant = invariants_by_id[invariant_id]
+        inert = (
+            invariant.enforcement is state.InvariantEnforcement.ADVISE
+            or invariant.status is state.InvariantStatus.SUPERSEDED
+        )
+        annotation = ", inert" if inert else ""
+        print(
+            f"- {invariant_id} (enforcement={invariant.enforcement.value}, "
+            f"status={invariant.status.value}{annotation})"
+        )
+
+
 def _run_approve(args: argparse.Namespace) -> int:
     try:
         normalized_scope = tuple(
@@ -241,6 +267,19 @@ def _run_approve(args: argparse.Namespace) -> int:
     if len(set(normalized_scope)) != len(normalized_scope):
         print(
             "evidline: invalid approval scope: duplicate normalized scope",
+            file=sys.stderr,
+        )
+        return _EXIT_INVALID_INPUT
+    acknowledged_ids = tuple(args.acknowledge or ())
+    if any(not invariant_id for invariant_id in acknowledged_ids):
+        print(
+            "evidline: invalid approval acknowledgement: id must be non-empty",
+            file=sys.stderr,
+        )
+        return _EXIT_INVALID_INPUT
+    if len(set(acknowledged_ids)) != len(acknowledged_ids):
+        print(
+            "evidline: invalid approval acknowledgement: duplicate invariant id",
             file=sys.stderr,
         )
         return _EXIT_INVALID_INPUT
@@ -268,6 +307,35 @@ def _run_approve(args: argparse.Namespace) -> int:
         print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
         return _EXIT_STATE_IO
 
+    invariants_by_id = {item.id: item for item in current.invariants}
+    all_record_ids = {
+        item.id
+        for records in (
+            current.invariants,
+            current.decisions,
+            current.tasks,
+            current.claims,
+            current.evidence,
+        )
+        for item in records
+    }
+    for invariant_id in acknowledged_ids:
+        if invariant_id in invariants_by_id:
+            continue
+        if invariant_id in all_record_ids:
+            print(
+                "evidline: invalid approval acknowledgement: id does not "
+                f"resolve to an Invariant: {invariant_id}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "evidline: invalid approval acknowledgement: unknown "
+                f"invariant id: {invariant_id}",
+                file=sys.stderr,
+            )
+        return _EXIT_INVALID_INPUT
+
     selected = next((task for task in current.tasks if task.id == args.task_id), None)
     if selected is None:
         print(f"evidline: approval task not found: {args.task_id}", file=sys.stderr)
@@ -293,6 +361,18 @@ def _run_approve(args: argparse.Namespace) -> int:
         )
         return _EXIT_INVALID_INPUT
 
+    host_semantics = paths.host_scope_semantics()
+    semantics_changed = current.scope_semantics is not host_semantics
+    if semantics_changed and (
+        any(task.authorized_scope for task in current.tasks)
+        or any(invariant.governed_scope for invariant in current.invariants)
+    ):
+        print(
+            "evidline: approval cannot reinterpret foreign non-empty scopes",
+            file=sys.stderr,
+        )
+        return _EXIT_INVALID_INPUT
+
     approved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     approved_task = replace(
         selected,
@@ -302,6 +382,7 @@ def _run_approve(args: argparse.Namespace) -> int:
         approved_at=approved_at,
         approval_channel=state.TRUSTED_APPROVAL_CHANNEL,
         asserted_actor=state.TRUSTED_ASSERTED_ACTOR,
+        acknowledged_invariant_ids=acknowledged_ids,
     )
     proposed = replace(
         current,
@@ -309,6 +390,7 @@ def _run_approve(args: argparse.Namespace) -> int:
             approved_task if task.id == selected.id else task
             for task in current.tasks
         ),
+        scope_semantics=host_semantics if semantics_changed else current.scope_semantics,
     )
     try:
         state.validate_state(proposed)
@@ -318,9 +400,16 @@ def _run_approve(args: argparse.Namespace) -> int:
 
     print("Evidline bounded task approval")
     print(f"task: {approved_task.id}")
+    print(f"task_description: {approved_task.description}")
     print("authorized_scope:")
     for scope in approved_task.authorized_scope:
         print(f"- {scope}")
+    _print_acknowledgements(acknowledged_ids, invariants_by_id)
+    if semantics_changed:
+        print(
+            "scope_semantics: "
+            f"{current.scope_semantics.value} -> {host_semantics.value}"
+        )
     print("TTY interactivity is defense-in-depth, not proof of human identity.")
     print(f"Type {approved_task.id} to approve, or anything else to cancel: ", end="")
     sys.stdout.flush()
@@ -348,6 +437,7 @@ def _run_approve(args: argparse.Namespace) -> int:
     print("authorized_scope:")
     for scope in approved_task.authorized_scope:
         print(f"- {scope}")
+    _print_acknowledgements(acknowledged_ids, invariants_by_id)
     return 0
 
 

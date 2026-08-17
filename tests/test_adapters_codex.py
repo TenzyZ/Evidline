@@ -23,6 +23,9 @@ from evidline.mutation import (
 from evidline.state import (
     Execution,
     Intent,
+    Invariant,
+    InvariantEnforcement,
+    InvariantStatus,
     Project,
     StateDocument,
     StateIOError,
@@ -42,6 +45,7 @@ def make_state(
     active_task: bool = False,
     authorized_scope: tuple[str, ...] = (),
     trusted: bool = False,
+    governed_scope: tuple[str, ...] = (),
 ) -> StateDocument:
     tasks: tuple[Task, ...] = ()
     if active_task:
@@ -60,8 +64,21 @@ def make_state(
                 asserted_actor=TRUSTED_ASSERTED_ACTOR if trusted else None,
             ),
         )
+    invariants = (
+        (
+            Invariant(
+                id="inv-governed",
+                description="Governed adapter target",
+                enforcement=InvariantEnforcement.BLOCK,
+                status=InvariantStatus.ACTIVE,
+                governed_scope=governed_scope,
+            ),
+        )
+        if governed_scope
+        else ()
+    )
     return StateDocument(
-        schema_version=2,
+        schema_version=3,
         revision=0,
         project=Project(
             name="Evidline",
@@ -69,7 +86,7 @@ def make_state(
             ignore_globs=(),
             default_budget_chars=default_budget_chars,
         ),
-        invariants=(),
+        invariants=invariants,
         decisions=(),
         tasks=tasks,
         claims=(),
@@ -632,6 +649,27 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual(
             self.invoke("pre-tool-use", self.tool_payload()),
             (0, "", ""),
+        )
+
+    def test_real_governed_block_is_transported_as_codex_deny(self) -> None:
+        self.write_state(
+            make_state(
+                active_task=True,
+                authorized_scope=("src",),
+                trusted=True,
+                governed_scope=("src",),
+            )
+        )
+        code, stdout, stderr = self.invoke(
+            "pre-tool-use",
+            self.tool_payload(),
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        output = self.permission_output(stdout)
+        self.assertEqual(output["permissionDecision"], "deny")
+        self.assertIn(
+            MutationReason.INVARIANT_UNACKNOWLEDGED.value,
+            str(output["permissionDecisionReason"]),
         )
 
     def test_real_multi_target_uses_max_severity_when_one_target_is_unauthorized(self) -> None:

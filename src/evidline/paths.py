@@ -8,6 +8,7 @@ outside Evidline hook coverage, or OS-level attacks.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 import ntpath
 import os
 from pathlib import Path
@@ -29,6 +30,13 @@ _WINDOWS_DEVICE_NAMES: Final = {
     *(f"LPT{number}" for number in range(1, 10)),
 }
 _WINDOWS_FORBIDDEN_CHARS = re.compile(r'[<>"|?*]')
+
+
+class ScopePathSemantics(str, Enum):
+    """Persisted scope-normalization discipline, not filesystem detection."""
+
+    CASE_SENSITIVE = "CASE_SENSITIVE"
+    CASE_FOLDED = "CASE_FOLDED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,13 +161,29 @@ def has_protected_component(root: Path, target: Path) -> bool:
     return any(part.casefold() in protected for part in Path(relative).parts)
 
 
-def normalize_root_relative_scope(value: str) -> str:
-    """Return one canonical root-relative scope prefix or raise ``ValueError``.
+def host_scope_semantics() -> ScopePathSemantics:
+    """Return the host normalization flavour without probing the filesystem."""
+
+    return (
+        ScopePathSemantics.CASE_FOLDED
+        if os.name == "nt"
+        else ScopePathSemantics.CASE_SENSITIVE
+    )
+
+
+def normalize_scope_for_semantics(
+    value: str,
+    semantics: ScopePathSemantics,
+) -> str:
+    """Normalize one scope under an explicit deterministic path flavour.
 
     ``.`` is the only whole-project representation.  The result uses forward
-    slashes and the host platform's existing ``normcase`` discipline.
+    slashes for ``CASE_FOLDED`` and preserves the existing non-Windows grammar
+    for ``CASE_SENSITIVE``.  This does not probe or describe a filesystem.
     """
 
+    if not isinstance(semantics, ScopePathSemantics):
+        raise ValueError("scope semantics must be ScopePathSemantics")
     if not isinstance(value, str) or not value or value != value.strip():
         raise ValueError("scope must be non-empty text without surrounding whitespace")
     if "\0" in value:
@@ -173,7 +197,11 @@ def normalize_root_relative_scope(value: str) -> str:
     if ntpath.isabs(value) or ntpath.splitdrive(value)[0] or posixpath.isabs(value):
         raise ValueError("scope must be root-relative")
 
-    separated = value.replace("\\", "/") if os.name == "nt" else value
+    separated = (
+        value.replace("\\", "/")
+        if semantics is ScopePathSemantics.CASE_FOLDED
+        else value
+    )
     components = separated.split("/")
     if any(component == ".." for component in components):
         raise ValueError("scope parent traversal is not allowed")
@@ -181,12 +209,18 @@ def normalize_root_relative_scope(value: str) -> str:
         component for component in components if component not in ("", ".")
     ]
     normalized = "/".join(normalized_components) or ROOT_RELATIVE_SCOPE
-    if os.name == "nt":
+    if semantics is ScopePathSemantics.CASE_FOLDED:
         windows_reason = _unsafe_windows_path(normalized)
         if windows_reason is not None:
             raise ValueError(windows_reason)
-        normalized = os.path.normcase(normalized).replace("\\", "/")
+        normalized = ntpath.normcase(normalized).replace("\\", "/")
     return normalized
+
+
+def normalize_root_relative_scope(value: str) -> str:
+    """Normalize one scope using the host's existing path discipline."""
+
+    return normalize_scope_for_semantics(value, host_scope_semantics())
 
 
 def path_is_within(scope: str | os.PathLike[str], target: str | os.PathLike[str]) -> bool:
@@ -277,7 +311,7 @@ def _unsafe_windows_path(path: str) -> str | None:
     if lowered.startswith(("\\\\?\\", "\\\\.\\", "\\??\\")):
         return "Windows namespace path is ambiguous"
 
-    isreserved = getattr(os.path, "isreserved", None)
+    isreserved = getattr(ntpath, "isreserved", None)
     if isreserved is not None:
         try:
             if isreserved(path):
@@ -286,7 +320,7 @@ def _unsafe_windows_path(path: str) -> str | None:
             return "Windows path cannot be classified"
         return None
 
-    drive, tail = os.path.splitdrive(path)
+    drive, tail = ntpath.splitdrive(path)
     del drive
     for component in re.split(r"[\\/]", tail):
         if component in ("", ".", ".."):

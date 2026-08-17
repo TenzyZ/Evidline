@@ -60,10 +60,18 @@ ALLOW transport is reached. Outside-scope and untrusted-channel scenarios do
 not derive authority. This is synthetic in-process proof, not live hook proof or
 human acceptance.
 
-`VAB-2` — **automatic unsupported-architecture-mutation blocking unreachable**
-— is OPEN. VAB-1 binds targets to Task scope, but no automatic path-scoped
-invariant relevance or acknowledgement exists. The benchmark proves only
-caller-asserted invariant-conflict blocking.
+`VAB-2` — **target-to-governed-invariant binding and acknowledgement
+enforcement** — is `IMPLEMENTED_PENDING_REVIEW`, not CLOSED. A covered mutation
+whose canonical target lies inside the governed filesystem scope of an ACTIVE
+BLOCK invariant is deterministically blocked unless the trusted ACTIVE Task
+explicitly acknowledges that invariant, provided no earlier failure prevents
+policy evaluation. The benchmark also proves that acknowledgement does not
+suppress caller-asserted invariant conflicts and that both existing adapters
+transport the core BLOCK as denial.
+
+VAB-2 is structural. It does not perform semantic invariant interpretation,
+diff-content understanding, or architecture-violation inference from prose.
+These are synthetic in-process proofs, not installed or live hook enforcement.
 
 ## Coverage boundary
 
@@ -100,7 +108,7 @@ token estimate are observations; no real tokenizer is used.
 ## What this does not prove
 
 The benchmark does not prove live hook dispatch, denial before a live mutation,
-live context injection, automatic architecture conflict detection, live
-adapter-level ordinary ALLOW, recovery telemetry, LLM-graded recovery accuracy,
-real tokenizer measurement, comprehensive tool coverage, or V1 release
-acceptance.
+live context injection, semantic architecture conflict detection, diff-content
+understanding, live adapter-level ordinary ALLOW, recovery telemetry, LLM-graded
+recovery accuracy, real tokenizer measurement, comprehensive tool coverage, or
+V1 release acceptance.
