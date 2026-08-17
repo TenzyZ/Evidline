@@ -33,6 +33,7 @@ _OUTCOME_SEVERITY: Final = {
 }
 
 _REQUEST: Final = MutationRequest(
+    # The core, never this adapter, may bind PROPOSED to trusted scoped state.
     request_intent=Intent.PROPOSED,
     risk=MutationRisk.NORMAL,
     operation=None,

@@ -10,8 +10,10 @@ from unittest import mock
 
 from evidline.paths import (
     _unsafe_windows_path,
+    canonical_target_in_authorized_scope,
     discover_project_root,
     evaluate_mutation_path,
+    normalize_root_relative_scope,
 )
 
 
@@ -164,6 +166,54 @@ class PathSafetyTests(unittest.TestCase):
             self.assertTrue(evaluate_mutation_path(self.root, differently_cased).safe)
         else:
             self.assertEqual(comparison, str(self.root / "MiXeD"))
+
+    def test_scope_normalization_is_root_relative_and_separator_stable(self) -> None:
+        expected = "src/package" if os.name == "nt" else "src\\package"
+        self.assertEqual(normalize_root_relative_scope("./src\\package/"), expected)
+        self.assertEqual(normalize_root_relative_scope("."), ".")
+
+    def test_scope_normalization_rejects_absolute_traversal_glob_and_negation(self) -> None:
+        for scope in (
+            "C:/outside",
+            "/outside",
+            "../outside",
+            "src/../outside",
+            "*.py",
+            "!src",
+            "src\nspoof",
+            "src\x1b[31m",
+        ):
+            with self.subTest(scope=scope):
+                with self.assertRaises(ValueError):
+                    normalize_root_relative_scope(scope)
+
+    def test_canonical_target_scope_matching_is_component_aware(self) -> None:
+        target = self.root / "src" / "package" / "app.py"
+        self.assertTrue(
+            canonical_target_in_authorized_scope(
+                self.root.resolve(), target, ("src/package",)
+            )
+        )
+        self.assertFalse(
+            canonical_target_in_authorized_scope(
+                self.root.resolve(), target, ("src/pack",)
+            )
+        )
+        self.assertFalse(
+            canonical_target_in_authorized_scope(self.root.resolve(), target, ())
+        )
+        self.assertTrue(
+            canonical_target_in_authorized_scope(self.root.resolve(), target, (".",))
+        )
+
+    @unittest.skipUnless(os.name == "nt", "Windows-only case matching")
+    def test_windows_scope_matching_is_case_insensitive(self) -> None:
+        target = self.root / "SRC" / "Package" / "app.py"
+        self.assertTrue(
+            canonical_target_in_authorized_scope(
+                self.root.resolve(), target, ("src/package",)
+            )
+        )
 
     def test_discovery_chooses_nearest_initialized_ancestor(self) -> None:
         nested_project = self.root / "nested"

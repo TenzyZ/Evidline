@@ -22,6 +22,7 @@ from evidline.state import (
     InvariantStatus,
     LOCK_FILENAME,
     Project,
+    SCHEMA_VERSION,
     StateAlreadyInitializedError,
     StateConflictError,
     StateDocument,
@@ -55,7 +56,7 @@ def valid_state(*, revision: int = 0) -> StateDocument:
         digest=DIGEST,
     )
     return StateDocument(
-        schema_version=1,
+        schema_version=2,
         revision=revision,
         project=Project(
             name="Evidline",
@@ -90,6 +91,7 @@ def valid_state(*, revision: int = 0) -> StateDocument:
                 intent=Intent.AUTHORIZED,
                 execution=Execution.EXECUTED,
                 related_ids=("dec-1",),
+                authorized_scope=("src", "docs/api"),
                 approved_at="2026-08-15T00:00:00+04:00",
                 approval_channel="interactive",
             ),
@@ -110,9 +112,13 @@ def valid_state(*, revision: int = 0) -> StateDocument:
 
 
 class StateValidationTests(unittest.TestCase):
+    def test_schema_version_is_two(self) -> None:
+        self.assertEqual(SCHEMA_VERSION, 2)
+
     def test_valid_state_round_trip(self) -> None:
         state = valid_state()
         self.assertEqual(parse_state(serialize_state(state)), state)
+        self.assertEqual(state.tasks[0].authorized_scope, ("src", "docs/api"))
 
     def test_serialization_is_deterministic(self) -> None:
         state = valid_state()
@@ -122,9 +128,57 @@ class StateValidationTests(unittest.TestCase):
         self.assertEqual(json.loads(first)["revision"], 0)
 
     def test_unsupported_schema_is_rejected(self) -> None:
+        for version in (1, 3):
+            with self.subTest(version=version):
+                raw = json.loads(serialize_state(valid_state()))
+                raw["schema_version"] = version
+                with self.assertRaises(UnsupportedSchemaError):
+                    parse_state(json.dumps(raw))
+
+    def test_empty_authorized_scope_is_valid(self) -> None:
+        state = valid_state()
+        task = replace(state.tasks[0], authorized_scope=())
+        validate_state(replace(state, tasks=(task,)))
+
+    def test_root_scope_is_explicit_and_valid(self) -> None:
+        state = valid_state()
+        task = replace(state.tasks[0], authorized_scope=(".",))
+        validate_state(replace(state, tasks=(task,)))
+
+    def test_unsafe_authorized_scope_is_rejected(self) -> None:
+        state = valid_state()
+        for scope in (
+            "C:/outside",
+            "/outside",
+            "../outside",
+            "src/../outside",
+            "*.py",
+            "!src",
+            "src\nspoof",
+        ):
+            with self.subTest(scope=scope):
+                task = replace(state.tasks[0], authorized_scope=(scope,))
+                with self.assertRaises(StateValidationError):
+                    validate_state(replace(state, tasks=(task,)))
+
+    def test_non_normalized_or_duplicate_authorized_scope_is_rejected(self) -> None:
+        state = valid_state()
+        for scope in (("src/",), ("./src",), ("src", "src")):
+            with self.subTest(scope=scope):
+                task = replace(state.tasks[0], authorized_scope=scope)
+                with self.assertRaises(StateValidationError):
+                    validate_state(replace(state, tasks=(task,)))
+
+    def test_malformed_task_scope_state_fails_closed(self) -> None:
         raw = json.loads(serialize_state(valid_state()))
-        raw["schema_version"] = 2
-        with self.assertRaises(UnsupportedSchemaError):
+        raw["tasks"][0]["authorized_scope"] = "src"
+        with self.assertRaises(StateValidationError):
+            parse_state(json.dumps(raw))
+
+    def test_unknown_task_key_is_rejected(self) -> None:
+        raw = json.loads(serialize_state(valid_state()))
+        raw["tasks"][0]["unknown"] = True
+        with self.assertRaises(StateValidationError):
             parse_state(json.dumps(raw))
 
     def test_malformed_json_is_rejected(self) -> None:

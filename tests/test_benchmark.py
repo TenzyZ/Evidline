@@ -84,8 +84,27 @@ class BenchmarkTests(unittest.TestCase):
         result = self.results["adapters.synthetic_allow_mapping"]["actual"]
         self.assertEqual(
             result["classification"],
-            "SYNTHETIC_ONLY_UNREACHABLE_IN_PRODUCTION",
+            "SYNTHETIC_MAPPING_ONLY",
         )
+
+    def test_vab1_scoped_adapter_proofs(self) -> None:
+        for scenario_id in (
+            "claude.authorized_normal_mutation",
+            "codex.authorized_normal_apply_patch",
+        ):
+            with self.subTest(scenario_id=scenario_id):
+                result = self.results[scenario_id]["actual"]
+                self.assertEqual(result["core_outcome"], "ALLOW")
+                self.assertEqual(result["authorizing_task_id"], "task-active")
+                self.assertTrue(result["adapter_silent"])
+        for scenario_id in (
+            "core.derived_outside_authorized_scope",
+            "core.untrusted_authorization_channel",
+        ):
+            with self.subTest(scenario_id=scenario_id):
+                result = self.results[scenario_id]["actual"]
+                self.assertEqual(result["outcome"], "ASK")
+                self.assertIsNone(result["authorizing_task_id"])
 
     def test_cross_harness_parity_and_asymmetry(self) -> None:
         self.assert_category_matched("cross")
@@ -94,13 +113,14 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(result["claude_transport"], "ask")
         self.assertEqual(result["codex_transport"], "deny")
 
-    def test_v1_blockers_are_open(self) -> None:
+    def test_v1_acceptance_remains_blocked(self) -> None:
         blockers = {
             item["id"]: item
             for item in self.observed["contract"]["v1_acceptance_blockers"]
         }
         self.assertEqual(set(blockers), {"VAB-1", "VAB-2"})
-        self.assertTrue(all(item["status"] == "OPEN" for item in blockers.values()))
+        self.assertEqual(blockers["VAB-1"]["status"], "IMPLEMENTED_PENDING_REVIEW")
+        self.assertEqual(blockers["VAB-2"]["status"], "OPEN")
         self.assertEqual(self.observed["contract"]["v1_acceptance"], "BLOCKED")
 
     def test_live_verification_is_not_attempted(self) -> None:

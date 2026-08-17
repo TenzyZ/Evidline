@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+from dataclasses import replace
+from datetime import datetime, timezone
 import os
 import sys
 
 from evidline import __version__
 from evidline import mutation
+from evidline import paths
 from evidline import state
 from evidline import status
 from evidline.context import (
@@ -83,6 +86,18 @@ def _build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument(
         "--format", choices=_STATUS_FORMATS, default="text"
     )
+
+    approve_parser = subparsers.add_parser(
+        "approve", help="interactively authorize one task for bounded paths"
+    )
+    approve_parser.add_argument("task_id", metavar="TASK_ID")
+    approve_parser.add_argument(
+        "--scope",
+        action="append",
+        required=True,
+        metavar="ROOT_RELATIVE_PATH",
+    )
+    approve_parser.add_argument("--root", metavar="PATH")
 
     context_parser = subparsers.add_parser(
         "context", help="compile bounded context from local state"
@@ -215,6 +230,127 @@ def _run_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_approve(args: argparse.Namespace) -> int:
+    try:
+        normalized_scope = tuple(
+            paths.normalize_root_relative_scope(value) for value in args.scope
+        )
+    except ValueError as exc:
+        print(f"evidline: invalid approval scope: {exc}", file=sys.stderr)
+        return _EXIT_INVALID_INPUT
+    if len(set(normalized_scope)) != len(normalized_scope):
+        print(
+            "evidline: invalid approval scope: duplicate normalized scope",
+            file=sys.stderr,
+        )
+        return _EXIT_INVALID_INPUT
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print(
+            "evidline: approval requires interactive TTY input and output; "
+            "TTY is defense-in-depth, not proof of human identity",
+            file=sys.stderr,
+        )
+        return _EXIT_INVALID_INPUT
+
+    root = paths.discover_project_root(args.root or os.curdir)
+    if root is None:
+        print("evidline: state not initialized: project root not found", file=sys.stderr)
+        return _EXIT_NOT_INITIALIZED
+    try:
+        current = state.load_state(root)
+    except state.StateNotInitializedError as exc:
+        print(f"evidline: state not initialized: {exc}", file=sys.stderr)
+        return _EXIT_NOT_INITIALIZED
+    except state.StateValidationError as exc:
+        print(f"evidline: invalid or unsupported state: {exc}", file=sys.stderr)
+        return _EXIT_INVALID_STATE
+    except state.StateIOError as exc:
+        print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+        return _EXIT_STATE_IO
+
+    selected = next((task for task in current.tasks if task.id == args.task_id), None)
+    if selected is None:
+        print(f"evidline: approval task not found: {args.task_id}", file=sys.stderr)
+        return _EXIT_INVALID_INPUT
+    if selected.status is state.TaskStatus.DONE:
+        print("evidline: DONE task cannot be approved", file=sys.stderr)
+        return _EXIT_INVALID_INPUT
+    if selected.intent is state.Intent.DENIED:
+        print("evidline: DENIED task cannot be approved", file=sys.stderr)
+        return _EXIT_INVALID_INPUT
+    existing_active = next(
+        (
+            task
+            for task in current.tasks
+            if task.status is state.TaskStatus.ACTIVE and task.id != selected.id
+        ),
+        None,
+    )
+    if existing_active is not None:
+        print(
+            f"evidline: another task is already ACTIVE: {existing_active.id}",
+            file=sys.stderr,
+        )
+        return _EXIT_INVALID_INPUT
+
+    approved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    approved_task = replace(
+        selected,
+        status=state.TaskStatus.ACTIVE,
+        intent=state.Intent.AUTHORIZED,
+        authorized_scope=normalized_scope,
+        approved_at=approved_at,
+        approval_channel=state.TRUSTED_APPROVAL_CHANNEL,
+        asserted_actor=state.TRUSTED_ASSERTED_ACTOR,
+    )
+    proposed = replace(
+        current,
+        tasks=tuple(
+            approved_task if task.id == selected.id else task
+            for task in current.tasks
+        ),
+    )
+    try:
+        state.validate_state(proposed)
+    except state.StateValidationError as exc:
+        print(f"evidline: approval transition is invalid: {exc}", file=sys.stderr)
+        return _EXIT_INVALID_INPUT
+
+    print("Evidline bounded task approval")
+    print(f"task: {approved_task.id}")
+    print("authorized_scope:")
+    for scope in approved_task.authorized_scope:
+        print(f"- {scope}")
+    print("TTY interactivity is defense-in-depth, not proof of human identity.")
+    print(f"Type {approved_task.id} to approve, or anything else to cancel: ", end="")
+    sys.stdout.flush()
+    confirmation = sys.stdin.readline()
+    if confirmation.rstrip("\r\n") != approved_task.id:
+        print("approval cancelled; state unchanged")
+        return _EXIT_INVALID_INPUT
+
+    try:
+        updated = state.write_state(
+            root, proposed, expected_revision=current.revision
+        )
+    except state.StateConflictError as exc:
+        print(f"evidline: state write conflict: {exc}", file=sys.stderr)
+        return _EXIT_STATE_IO
+    except state.StateValidationError as exc:
+        print(f"evidline: invalid approval state: {exc}", file=sys.stderr)
+        return _EXIT_INVALID_STATE
+    except state.StateIOError as exc:
+        print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+        return _EXIT_STATE_IO
+
+    print(f"approved: {approved_task.id}")
+    print(f"state_revision: {updated.revision}")
+    print("authorized_scope:")
+    for scope in approved_task.authorized_scope:
+        print(f"- {scope}")
+    return 0
+
+
 def _run_context(args: argparse.Namespace) -> int:
     try:
         profile = ContextProfile(args.profile)
@@ -306,6 +442,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_init(args)
     if args.command == "status":
         return _run_status(args)
+    if args.command == "approve":
+        return _run_approve(args)
     if args.command == "context":
         return _run_context(args)
     if args.command == "check-mutation":

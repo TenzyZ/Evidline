@@ -8,13 +8,16 @@ outside Evidline hook coverage, or OS-level attacks.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ntpath
 import os
 from pathlib import Path
+import posixpath
 import re
 from typing import Final
 
 
 PROTECTED_DIRECTORIES: Final = (".git", ".evidline")
+ROOT_RELATIVE_SCOPE: Final = "."
 _WINDOWS_DEVICE_NAMES: Final = {
     "CON",
     "PRN",
@@ -148,6 +151,82 @@ def has_protected_component(root: Path, target: Path) -> bool:
     relative = os.path.relpath(target_text, root_text)
     protected = {name.casefold() for name in PROTECTED_DIRECTORIES}
     return any(part.casefold() in protected for part in Path(relative).parts)
+
+
+def normalize_root_relative_scope(value: str) -> str:
+    """Return one canonical root-relative scope prefix or raise ``ValueError``.
+
+    ``.`` is the only whole-project representation.  The result uses forward
+    slashes and the host platform's existing ``normcase`` discipline.
+    """
+
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError("scope must be non-empty text without surrounding whitespace")
+    if "\0" in value:
+        raise ValueError("scope contains NUL")
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("scope contains a control character")
+    if value.startswith("!"):
+        raise ValueError("scope negation is not allowed")
+    if any(character in value for character in "*?[]"):
+        raise ValueError("scope glob syntax is not allowed")
+    if ntpath.isabs(value) or ntpath.splitdrive(value)[0] or posixpath.isabs(value):
+        raise ValueError("scope must be root-relative")
+
+    separated = value.replace("\\", "/") if os.name == "nt" else value
+    components = separated.split("/")
+    if any(component == ".." for component in components):
+        raise ValueError("scope parent traversal is not allowed")
+    normalized_components = [
+        component for component in components if component not in ("", ".")
+    ]
+    normalized = "/".join(normalized_components) or ROOT_RELATIVE_SCOPE
+    if os.name == "nt":
+        windows_reason = _unsafe_windows_path(normalized)
+        if windows_reason is not None:
+            raise ValueError(windows_reason)
+        normalized = os.path.normcase(normalized).replace("\\", "/")
+    return normalized
+
+
+def path_is_within(scope: str | os.PathLike[str], target: str | os.PathLike[str]) -> bool:
+    """Return component-aware containment using the canonical path discipline."""
+
+    scope_text = os.path.normcase(os.path.normpath(os.fspath(scope)))
+    target_text = os.path.normcase(os.path.normpath(os.fspath(target)))
+    try:
+        return os.path.commonpath((scope_text, target_text)) == scope_text
+    except ValueError:
+        return False
+
+
+def canonical_target_in_authorized_scope(
+    root: Path, target: Path, authorized_scope: tuple[str, ...]
+) -> bool:
+    """Match an already-canonical target to validated root-relative prefixes.
+
+    This function performs no filesystem access.  Invalid or non-canonical
+    scope state fails closed.
+    """
+
+    if not authorized_scope or not path_is_within(root, target) or target == root:
+        return False
+    try:
+        relative = normalize_root_relative_scope(os.path.relpath(target, root))
+    except (OSError, ValueError):
+        return False
+    for scope in authorized_scope:
+        try:
+            normalized_scope = normalize_root_relative_scope(scope)
+        except ValueError:
+            return False
+        if normalized_scope != scope:
+            return False
+        if normalized_scope == ROOT_RELATIVE_SCOPE:
+            return True
+        if relative == normalized_scope or relative.startswith(normalized_scope + "/"):
+            return True
+    return False
 
 
 def _path_text(value: str | os.PathLike[str]) -> str | None:

@@ -20,10 +20,12 @@ from typing import Any, Final, Mapping, NoReturn
 from evidline import paths as _paths
 
 
-SCHEMA_VERSION: Final = 1
+SCHEMA_VERSION: Final = 2
 STATE_DIRECTORY: Final = ".evidline"
 STATE_FILENAME: Final = "state.json"
 LOCK_FILENAME: Final = ".state.lock"
+TRUSTED_APPROVAL_CHANNEL: Final = "evidline-cli-interactive"
+TRUSTED_ASSERTED_ACTOR: Final = "interactive-cli-operator"
 _DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _ID_PATTERN = re.compile(r"[a-z]+-[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
@@ -123,6 +125,7 @@ class Task:
     intent: Intent
     execution: Execution
     related_ids: tuple[str, ...] = ()
+    authorized_scope: tuple[str, ...] = ()
     approved_at: str | None = None
     approval_channel: str | None = None
     asserted_actor: str | None = None
@@ -618,7 +621,11 @@ def _task_from_object(raw: Any) -> Task:
     value = _strict_object(raw, "task")
     _exact_keys(
         value,
-        {"id", "description", "status", "intent", "execution", "related_ids", "approved_at", "approval_channel", "asserted_actor"},
+        {
+            "id", "description", "status", "intent", "execution",
+            "related_ids", "authorized_scope", "approved_at",
+            "approval_channel", "asserted_actor",
+        },
         "task",
     )
     return Task(
@@ -628,6 +635,9 @@ def _task_from_object(raw: Any) -> Task:
         intent=_enum(Intent, value["intent"], "intent"),
         execution=_enum(Execution, value["execution"], "execution"),
         related_ids=_string_tuple(value["related_ids"], "related_ids"),
+        authorized_scope=_string_tuple(
+            value["authorized_scope"], "authorized_scope"
+        ),
         approved_at=_optional_string(value["approved_at"], "approved_at"),
         approval_channel=_optional_string(value["approval_channel"], "approval_channel"),
         asserted_actor=_optional_string(value["asserted_actor"], "asserted_actor"),
@@ -747,11 +757,30 @@ def _validate_task(item: Task, all_records: Mapping[str, Any]) -> None:
         _non_empty_string(related_id, f"{item.id}.related_ids item")
         if related_id not in all_records:
             _invalid(f"{item.id} has unresolved related id: {related_id}")
+    _validate_authorized_scope(item)
     _metadata_strings(item.approved_at, item.approval_channel, item.asserted_actor)
     if item.status is TaskStatus.ACTIVE:
         if item.intent is not Intent.AUTHORIZED:
             _invalid(f"{item.id} must be AUTHORIZED before becoming ACTIVE")
         _required_transition_metadata(item.id, item.approved_at, item.approval_channel)
+
+
+def _validate_authorized_scope(item: Task) -> None:
+    if not isinstance(item.authorized_scope, tuple):
+        _invalid(f"{item.id}.authorized_scope must be a tuple")
+    seen: set[str] = set()
+    for scope in item.authorized_scope:
+        try:
+            normalized = _paths.normalize_root_relative_scope(scope)
+        except ValueError as exc:
+            _invalid(f"{item.id}.authorized_scope invalid: {exc}")
+        if normalized != scope:
+            _invalid(
+                f"{item.id}.authorized_scope entries must be normalized: {scope}"
+            )
+        if scope in seen:
+            _invalid(f"{item.id}.authorized_scope contains duplicate: {scope}")
+        seen.add(scope)
 
 
 def _validate_claim(item: Claim, evidence_by_id: Mapping[str, Evidence]) -> None:

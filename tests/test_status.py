@@ -49,7 +49,7 @@ def populated_state(*, active_task: bool = True) -> StateDocument:
         ),
     )
     return StateDocument(
-        schema_version=1,
+        schema_version=2,
         revision=4,
         project=Project("Evidline", "Local continuity", (), 8000),
         invariants=(
@@ -133,7 +133,7 @@ class StatusTests(unittest.TestCase):
                 "root: C:\\project",
                 "state: C:\\project\\.evidline\\state.json",
                 "status_schema_version: 1",
-                "state_schema_version: 1",
+                "state_schema_version: 2",
                 "state_revision: 4",
                 "project: Evidline",
                 "default_budget_chars: 8000",

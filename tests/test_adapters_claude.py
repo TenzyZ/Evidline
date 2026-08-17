@@ -32,12 +32,18 @@ from evidline.state import (
     StateValidationError,
     Task,
     TaskStatus,
+    TRUSTED_APPROVAL_CHANNEL,
+    TRUSTED_ASSERTED_ACTOR,
     serialize_state,
 )
 
 
 def make_state(
-    *, default_budget_chars: int = 8000, active_task: bool = False
+    *,
+    default_budget_chars: int = 8000,
+    active_task: bool = False,
+    authorized_scope: tuple[str, ...] = (),
+    trusted: bool = False,
 ) -> StateDocument:
     tasks: tuple[Task, ...] = ()
     if active_task:
@@ -48,12 +54,16 @@ def make_state(
                 status=TaskStatus.ACTIVE,
                 intent=Intent.AUTHORIZED,
                 execution=Execution.NOT_RUN,
+                authorized_scope=authorized_scope,
                 approved_at="2026-08-16T00:00:00+04:00",
-                approval_channel="interactive",
+                approval_channel=(
+                    TRUSTED_APPROVAL_CHANNEL if trusted else "interactive"
+                ),
+                asserted_actor=TRUSTED_ASSERTED_ACTOR if trusted else None,
             ),
         )
     return StateDocument(
-        schema_version=1,
+        schema_version=2,
         revision=0,
         project=Project(
             name="Evidline",
@@ -513,6 +523,26 @@ class ClaudeAdapterTests(unittest.TestCase):
             )
         self.assertEqual((code, stdout, stderr), (0, "", ""))
         self.assertNotIn("allow", stdout)
+
+    def test_real_scoped_authorization_reaches_silent_allow(self) -> None:
+        self.write_state(
+            make_state(
+                active_task=True,
+                authorized_scope=("src",),
+                trusted=True,
+            )
+        )
+        self.assertEqual(
+            self.invoke("pre-tool-use", self.tool_payload(target="src/file.py")),
+            (0, "", ""),
+        )
+        code, stdout, stderr = self.invoke(
+            "pre-tool-use", self.tool_payload(target="docs/file.py")
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertEqual(
+            self.permission_output(stdout)["permissionDecision"], "ask"
+        )
 
     def test_real_covered_policy_matrix_never_emits_silence(self) -> None:
         outside = self.base / "outside.py"

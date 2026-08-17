@@ -5,7 +5,7 @@
       "CONTEXT_COMPILATION_VERIFIED",
       "ADAPTER_TRANSPORT_VERIFIED",
       "SYNTHETIC_CROSS_HARNESS_PARITY_VERIFIED",
-      "SYNTHETIC_ONLY_UNREACHABLE_IN_PRODUCTION",
+      "SYNTHETIC_MAPPING_ONLY",
       "UNCOVERED",
       "NOT_MEASURABLE_V1"
     ],
@@ -28,8 +28,8 @@
       "over_budget": false,
       "policy_vs_failure_confusion_count": 0,
       "required_facts_restored": 11,
-      "scenarios_matched": 43,
-      "scenarios_total": 43,
+      "scenarios_matched": 47,
+      "scenarios_total": 47,
       "session_payload_identical": true,
       "stale_reuse_count": 0,
       "stale_revalidation_count": 2,
@@ -53,6 +53,8 @@
       "core.no_active_task",
       "core.invalid_state",
       "core.denied_intent",
+      "core.derived_outside_authorized_scope",
+      "core.untrusted_authorization_channel",
       "context.session_continuity",
       "context.stale_claims",
       "context.failed_claim",
@@ -64,9 +66,11 @@
       "claude.session_sources",
       "codex.session_sources",
       "claude.safe_covered_tools",
+      "claude.authorized_normal_mutation",
       "claude.protected_mutation",
       "claude.uncovered_tool",
       "codex.safe_apply_patch",
+      "codex.authorized_normal_apply_patch",
       "codex.protected_apply_patch",
       "codex.mixed_apply_patch",
       "codex.malformed_patches",
@@ -94,8 +98,8 @@
     "v1_acceptance_blockers": [
       {
         "id": "VAB-1",
-        "status": "OPEN",
-        "title": "adapter-path normal-edit ALLOW unreachable"
+        "status": "IMPLEMENTED_PENDING_REVIEW",
+        "title": "trusted scoped adapter ALLOW implemented; independent review pending"
       },
       {
         "id": "VAB-2",
