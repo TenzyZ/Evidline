@@ -1,0 +1,108 @@
+{
+  "contract": {
+    "claim_labels": [
+      "CORE_POLICY_VERIFIED",
+      "CONTEXT_COMPILATION_VERIFIED",
+      "ADAPTER_TRANSPORT_VERIFIED",
+      "SYNTHETIC_CROSS_HARNESS_PARITY_VERIFIED",
+      "SYNTHETIC_ONLY_UNREACHABLE_IN_PRODUCTION",
+      "UNCOVERED",
+      "NOT_MEASURABLE_V1"
+    ],
+    "live_verification": {
+      "INSTALLED_HARNESS_DISPATCH": "NOT_ATTEMPTED",
+      "LIVE_CONTEXT_INJECTION": "NOT_ATTEMPTED",
+      "LIVE_MUTATION_DENIAL": "NOT_ATTEMPTED"
+    },
+    "metrics": {
+      "accounting_exact": true,
+      "adapter_failure_count": 13,
+      "audit_completeness": true,
+      "expected_asymmetry_count": 1,
+      "false_allow_count": 0,
+      "false_block_count": 0,
+      "false_escalation_count": 0,
+      "incorrectly_asserted_facts": 0,
+      "missing_facts": 0,
+      "outcome_agreement_count": 2,
+      "over_budget": false,
+      "policy_vs_failure_confusion_count": 0,
+      "required_facts_restored": 11,
+      "scenarios_matched": 43,
+      "scenarios_total": 43,
+      "session_payload_identical": true,
+      "stale_reuse_count": 0,
+      "stale_revalidation_count": 2,
+      "uncovered_count": 7,
+      "unexpected_divergence_count": 0
+    },
+    "scenario_ids": [
+      "core.ordinary_authorized_edit",
+      "core.scope_violation",
+      "core.active_block_invariant",
+      "core.active_advise_invariant",
+      "core.superseded_invariant",
+      "core.unknown_invariant",
+      "core.high_inadequate_support",
+      "core.high_valid_support",
+      "core.failed_support_claim",
+      "core.protected_git_config",
+      "core.protected_state",
+      "core.protected_nested_git",
+      "core.out_of_root",
+      "core.no_active_task",
+      "core.invalid_state",
+      "core.denied_intent",
+      "context.session_continuity",
+      "context.stale_claims",
+      "context.failed_claim",
+      "context.budget_accounting",
+      "context.minimum_budget_failure",
+      "context.invariant_budget_overflow",
+      "context.no_active_task",
+      "context.handoff",
+      "claude.session_sources",
+      "codex.session_sources",
+      "claude.safe_covered_tools",
+      "claude.protected_mutation",
+      "claude.uncovered_tool",
+      "codex.safe_apply_patch",
+      "codex.protected_apply_patch",
+      "codex.mixed_apply_patch",
+      "codex.malformed_patches",
+      "adapters.missing_invalid_state",
+      "adapters.no_project_root",
+      "codex.uncovered_tools",
+      "adapters.synthetic_allow_mapping",
+      "adapters.wrong_hook_event",
+      "adapters.bad_argv",
+      "cross.session_context_parity",
+      "cross.safe_target_asymmetry",
+      "cross.protected_target_parity",
+      "cross.failure_parity"
+    ],
+    "uncovered_surfaces": [
+      "Claude Bash",
+      "Claude PowerShell",
+      "Claude MCP",
+      "Codex Bash",
+      "Codex MCP",
+      "other Codex local functions",
+      "spawn_agent"
+    ],
+    "v1_acceptance": "BLOCKED",
+    "v1_acceptance_blockers": [
+      {
+        "id": "VAB-1",
+        "status": "OPEN",
+        "title": "adapter-path normal-edit ALLOW unreachable"
+      },
+      {
+        "id": "VAB-2",
+        "status": "OPEN",
+        "title": "automatic unsupported-architecture-mutation blocking unreachable"
+      }
+    ]
+  },
+  "schema_version": 1
+}
