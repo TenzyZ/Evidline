@@ -59,10 +59,11 @@ def valid_state(*, revision: int = 0) -> StateDocument:
         description="Observed digest",
         provenance=EvidenceProvenance.DIRECT_OBSERVATION,
         execution=Execution.EXECUTED,
+        source_path="evidence/observed.txt",
         digest=DIGEST,
     )
     return StateDocument(
-        schema_version=3,
+        schema_version=4,
         revision=revision,
         project=Project(
             name="Evidline",
@@ -121,8 +122,8 @@ def valid_state(*, revision: int = 0) -> StateDocument:
 
 
 class StateValidationTests(unittest.TestCase):
-    def test_schema_version_is_three(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 3)
+    def test_schema_version_is_four(self) -> None:
+        self.assertEqual(SCHEMA_VERSION, 4)
 
     def test_valid_state_round_trip(self) -> None:
         state = valid_state()
@@ -130,6 +131,7 @@ class StateValidationTests(unittest.TestCase):
         self.assertEqual(state.tasks[0].authorized_scope, ("src", "docs/api"))
         self.assertEqual(state.invariants[0].governed_scope, ("src",))
         self.assertEqual(state.tasks[0].acknowledged_invariant_ids, ("inv-1",))
+        self.assertEqual(state.evidence[0].source_path, "evidence/observed.txt")
         self.assertIs(state.scope_semantics, host_scope_semantics())
 
     def test_serialization_is_deterministic(self) -> None:
@@ -140,7 +142,7 @@ class StateValidationTests(unittest.TestCase):
         self.assertEqual(json.loads(first)["revision"], 0)
 
     def test_unsupported_schema_is_rejected(self) -> None:
-        for version in (1, 2, 4):
+        for version in (1, 2, 3, 5):
             with self.subTest(version=version):
                 raw = json.loads(serialize_state(valid_state()))
                 raw["schema_version"] = version
@@ -154,15 +156,17 @@ class StateValidationTests(unittest.TestCase):
         with self.assertRaises(UnsupportedSchemaError):
             parse_state(json.dumps(old))
 
-    def test_schema_three_exact_keys_are_required(self) -> None:
+    def test_schema_four_exact_keys_are_required(self) -> None:
         raw = json.loads(serialize_state(valid_state()))
         self.assertEqual(raw["scope_semantics"], host_scope_semantics().value)
         self.assertIn("governed_scope", raw["invariants"][0])
         self.assertIn("acknowledged_invariant_ids", raw["tasks"][0])
+        self.assertIn("source_path", raw["evidence"][0])
         for key in (
             "scope_semantics",
             "governed_scope",
             "acknowledged_invariant_ids",
+            "source_path",
         ):
             with self.subTest(key=key):
                 candidate = json.loads(serialize_state(valid_state()))
@@ -171,9 +175,70 @@ class StateValidationTests(unittest.TestCase):
                     target = candidate["invariants"][0]
                 elif key == "acknowledged_invariant_ids":
                     target = candidate["tasks"][0]
+                elif key == "source_path":
+                    target = candidate["evidence"][0]
                 del target[key]
                 with self.assertRaises(StateValidationError):
                     parse_state(json.dumps(candidate))
+
+    def test_evidence_binding_may_be_absent(self) -> None:
+        state = valid_state()
+        evidence = replace(state.evidence[0], source_path=None, digest=None)
+        validate_state(replace(state, evidence=(evidence,)))
+
+    def test_normalized_evidence_binding_is_valid(self) -> None:
+        validate_state(valid_state())
+
+    def test_evidence_source_without_digest_is_rejected(self) -> None:
+        state = valid_state()
+        evidence = replace(state.evidence[0], digest=None)
+        with self.assertRaises(StateValidationError):
+            validate_state(replace(state, evidence=(evidence,)))
+
+    def test_evidence_digest_without_source_is_rejected(self) -> None:
+        state = valid_state()
+        evidence = replace(state.evidence[0], source_path=None)
+        with self.assertRaises(StateValidationError):
+            validate_state(replace(state, evidence=(evidence,)))
+
+    def test_invalid_or_unsafe_evidence_source_path_is_rejected(self) -> None:
+        state = valid_state()
+        for source_path in (
+            "",
+            "C:/outside",
+            "/outside",
+            "../outside",
+            "src/../outside",
+            "*.py",
+            "!src",
+            "src\0bad",
+            "src\nspoof",
+            "src/",
+        ):
+            with self.subTest(source_path=source_path):
+                evidence = replace(state.evidence[0], source_path=source_path)
+                with self.assertRaises(StateValidationError):
+                    validate_state(replace(state, evidence=(evidence,)))
+
+    def test_root_evidence_source_is_grammar_valid(self) -> None:
+        state = valid_state()
+        evidence = replace(state.evidence[0], source_path=".")
+        validate_state(replace(state, evidence=(evidence,)))
+
+    def test_windows_invalid_evidence_source_rejects_under_folded_semantics(self) -> None:
+        state = valid_state()
+        evidence = replace(state.evidence[0], source_path="CON")
+        candidate = replace(
+            state,
+            evidence=(evidence,),
+            scope_semantics=ScopePathSemantics.CASE_FOLDED,
+        )
+        with mock.patch(
+            "evidline.state._paths.host_scope_semantics",
+            return_value=ScopePathSemantics.CASE_FOLDED,
+        ):
+            with self.assertRaises(StateValidationError):
+                validate_state(candidate)
 
     def test_scope_semantics_marker_failures_are_rejected(self) -> None:
         raw = json.loads(serialize_state(valid_state()))
@@ -374,6 +439,28 @@ class StateValidationTests(unittest.TestCase):
                         validate_state(candidate)
                 normalizer.assert_not_called()
 
+    def test_incompatible_bound_evidence_fails_before_path_normalization(self) -> None:
+        state = valid_state()
+        task = replace(state.tasks[0], authorized_scope=())
+        invariant = replace(state.invariants[0], governed_scope=())
+        foreign = (
+            ScopePathSemantics.CASE_SENSITIVE
+            if host_scope_semantics() is ScopePathSemantics.CASE_FOLDED
+            else ScopePathSemantics.CASE_FOLDED
+        )
+        candidate = replace(
+            state,
+            tasks=(task,),
+            invariants=(invariant,),
+            scope_semantics=foreign,
+        )
+        with mock.patch(
+            "evidline.state._paths.normalize_root_relative_scope"
+        ) as normalizer:
+            with self.assertRaises(IncompatibleScopeSemanticsError):
+                validate_state(candidate)
+        normalizer.assert_not_called()
+
     def test_matching_semantics_and_empty_scope_exception_are_valid(self) -> None:
         for semantics in ScopePathSemantics:
             scope = normalize_scope_for_semantics("Src", semantics)
@@ -395,6 +482,7 @@ class StateValidationTests(unittest.TestCase):
         state = valid_state()
         task = replace(state.tasks[0], authorized_scope=())
         invariant = replace(state.invariants[0], governed_scope=())
+        evidence = replace(state.evidence[0], source_path=None, digest=None)
         foreign = (
             ScopePathSemantics.CASE_SENSITIVE
             if host_scope_semantics() is ScopePathSemantics.CASE_FOLDED
@@ -405,6 +493,7 @@ class StateValidationTests(unittest.TestCase):
                 state,
                 tasks=(task,),
                 invariants=(invariant,),
+                evidence=(evidence,),
                 scope_semantics=foreign,
             )
         )
@@ -465,6 +554,15 @@ class StateValidationTests(unittest.TestCase):
                         replace(state, claims=(claim,), evidence=(evidence,))
                     )
 
+    def test_persisted_verified_diagnostic_is_unconditional(self) -> None:
+        state = valid_state()
+        claim = replace(state.claims[0], verification=Verification.VERIFIED)
+        with self.assertRaisesRegex(
+            StateValidationError,
+            r"claim-1 VERIFIED cannot be persisted$",
+        ):
+            validate_state(replace(state, claims=(claim,)))
+
     def test_verified_persisted_volatile_is_rejected(self) -> None:
         state = valid_state()
         claim = replace(
@@ -519,9 +617,22 @@ class StateValidationTests(unittest.TestCase):
 
     def test_failed_with_verification_provenance_remains_valid(self) -> None:
         state = valid_state()
+        evidence = replace(state.evidence[0], source_path=None, digest=None)
         claim = replace(
             state.claims[0],
             verification=Verification.FAILED,
+            verifier_rule=VerifierRule.R1_DIGEST_MATCH,
+            verified_at="2026-08-15T00:01:00+04:00",
+            verifying_evidence_ids=("evidence-1",),
+        )
+        validate_state(replace(state, claims=(claim,), evidence=(evidence,)))
+
+    def test_failed_with_reproducible_binding_remains_valid(self) -> None:
+        state = valid_state()
+        claim = replace(
+            state.claims[0],
+            verification=Verification.FAILED,
+            reproducible=True,
             verifier_rule=VerifierRule.R1_DIGEST_MATCH,
             verified_at="2026-08-15T00:01:00+04:00",
             verifying_evidence_ids=("evidence-1",),
@@ -626,6 +737,7 @@ class StatePersistenceTests(unittest.TestCase):
         state = valid_state()
         task = replace(state.tasks[0], authorized_scope=())
         invariant = replace(state.invariants[0], governed_scope=())
+        evidence = replace(state.evidence[0], source_path=None, digest=None)
         foreign = (
             ScopePathSemantics.CASE_SENSITIVE
             if host_scope_semantics() is ScopePathSemantics.CASE_FOLDED
@@ -635,6 +747,7 @@ class StatePersistenceTests(unittest.TestCase):
             state,
             tasks=(task,),
             invariants=(invariant,),
+            evidence=(evidence,),
             scope_semantics=foreign,
         )
         self.state_path.write_text(serialize_state(document), encoding="utf-8")

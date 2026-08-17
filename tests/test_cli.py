@@ -59,7 +59,7 @@ def high_state() -> StateDocument:
         execution=Execution.EXECUTED,
     )
     return StateDocument(
-        schema_version=3,
+        schema_version=4,
         revision=0,
         project=Project("project", "Phase 4", (), 8000),
         invariants=(
@@ -311,7 +311,7 @@ class CliTests(unittest.TestCase):
                     f"root: {self.root.resolve()}",
                     f"state: {state_path.resolve()}",
                     "status_schema_version: 1",
-                    "state_schema_version: 3",
+                    "state_schema_version: 4",
                     "state_revision: 0",
                     "project: project",
                     "default_budget_chars: 8000",

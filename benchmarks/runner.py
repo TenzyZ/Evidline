@@ -25,7 +25,7 @@ from benchmarks.scenarios import (
     V1_ACCEPTANCE_BLOCKERS,
     ScenarioSpec,
 )
-from evidline import context, mutation, paths
+from evidline import context, mutation, paths, verification
 from evidline.adapters import claude, codex
 from evidline.context import (
     ContextInputError,
@@ -356,7 +356,7 @@ def _scenario_core(fixture: BenchmarkFixture, scenario_id: str) -> dict[str, Any
                 fixture,
                 target,
                 _request(),
-                state=replace(fixture.state, schema_version=4),
+                state=replace(fixture.state, schema_version=5),
             )
         except MutationInputError as error:
             return {"exception": type(error).__name__, "message": str(error)}
@@ -968,6 +968,65 @@ def _scenario_cross(fixture: BenchmarkFixture, scenario_id: str) -> dict[str, An
     raise KeyError(scenario_id)
 
 
+def _scenario_verify(
+    fixture: BenchmarkFixture,
+    scenario_id: str,
+) -> dict[str, Any]:
+    evidence = {
+        item.id: item for item in fixture.verification_state.evidence
+    }
+    claims = {
+        item.id: item for item in fixture.verification_state.claims
+    }
+    evidence_scenarios = {
+        "verify.evidence_verified": "evidence-verify-good",
+        "verify.evidence_digest_mismatch": "evidence-verify-failed",
+        "verify.evidence_missing_source": "evidence-verify-missing",
+        "verify.evidence_protected_source": "evidence-verify-protected",
+    }
+    claim_scenarios = {
+        "verify.claim_verified": "claim-verify-good",
+        "verify.claim_failed_precedence": "claim-verify-failed-precedence",
+        "verify.claim_unverified_precedence": "claim-verify-unverified-precedence",
+        "verify.claim_volatile_freshness_does_not_gate": "claim-verify-volatile",
+    }
+    if scenario_id in evidence_scenarios:
+        result = verification.verify_evidence(
+            fixture.root,
+            evidence[evidence_scenarios[scenario_id]],
+        )
+        return {
+            "verification": result.verification.value,
+            "reason": result.reason.value,
+        }
+    if scenario_id in claim_scenarios:
+        result = verification.verify_claim(
+            fixture.root,
+            fixture.verification_state,
+            claims[claim_scenarios[scenario_id]],
+        )
+        return {
+            "verification": result.verification.value,
+            "reason": result.reason.value,
+        }
+    if scenario_id == "verify.no_state_write":
+        state_path = fixture.target(".evidline/state.json")
+        before_bytes = state_path.read_bytes()
+        before_revision = fixture.verification_state.revision
+        verification.verify_claim(
+            fixture.root,
+            fixture.verification_state,
+            claims["claim-verify-good"],
+        )
+        return {
+            "state_bytes_unchanged": state_path.read_bytes() == before_bytes,
+            "revision_unchanged": (
+                fixture.verification_state.revision == before_revision
+            ),
+        }
+    raise KeyError(scenario_id)
+
+
 def _execute_scenario(fixture: BenchmarkFixture, spec: ScenarioSpec) -> dict[str, Any]:
     dispatch: dict[str, Callable[[BenchmarkFixture, str], dict[str, Any]]] = {
         "core": _scenario_core,
@@ -975,6 +1034,7 @@ def _execute_scenario(fixture: BenchmarkFixture, spec: ScenarioSpec) -> dict[str
         "claude": _scenario_claude,
         "codex": _scenario_codex,
         "adapters": _scenario_adapters,
+        "verify": _scenario_verify,
         "cross": _scenario_cross,
     }
     return dispatch[spec.category](fixture, spec.id)

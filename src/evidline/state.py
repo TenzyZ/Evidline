@@ -20,7 +20,7 @@ from typing import Any, Final, Mapping, NoReturn
 from evidline import paths as _paths
 
 
-SCHEMA_VERSION: Final = 3
+SCHEMA_VERSION: Final = 4
 STATE_DIRECTORY: Final = ".evidline"
 STATE_FILENAME: Final = "state.json"
 LOCK_FILENAME: Final = ".state.lock"
@@ -152,6 +152,7 @@ class Evidence:
     description: str
     provenance: EvidenceProvenance
     execution: Execution
+    source_path: str | None = None
     digest: str | None = None
 
 
@@ -306,12 +307,16 @@ def _incompatible_scope_semantics(
         return False
     tasks = state.tasks if isinstance(state.tasks, tuple) else ()
     invariants = state.invariants if isinstance(state.invariants, tuple) else ()
+    evidence = state.evidence if isinstance(state.evidence, tuple) else ()
     return any(
         type(task) is Task and bool(task.authorized_scope)
         for task in tasks
     ) or any(
         type(invariant) is Invariant and bool(invariant.governed_scope)
         for invariant in invariants
+    ) or any(
+        type(item) is Evidence and bool(item.source_path)
+        for item in evidence
     )
 
 
@@ -722,12 +727,17 @@ def _claim_from_object(raw: Any) -> Claim:
 
 def _evidence_from_object(raw: Any) -> Evidence:
     value = _strict_object(raw, "evidence")
-    _exact_keys(value, {"id", "description", "provenance", "execution", "digest"}, "evidence")
+    _exact_keys(
+        value,
+        {"id", "description", "provenance", "execution", "source_path", "digest"},
+        "evidence",
+    )
     return Evidence(
         id=value["id"],
         description=value["description"],
         provenance=_enum(EvidenceProvenance, value["provenance"], "provenance"),
         execution=_enum(Execution, value["execution"], "execution"),
+        source_path=_optional_string(value["source_path"], "source_path"),
         digest=_optional_string(value["digest"], "digest"),
     )
 
@@ -904,16 +914,23 @@ def _validate_claim(item: Claim, evidence_by_id: Mapping[str, Evidence]) -> None
     if not set(item.verifying_evidence_ids).issubset(item.evidence_ids):
         _invalid(f"{item.id} verifying evidence must also be supporting evidence")
     if item.verification is Verification.VERIFIED:
-        _invalid(
-            f"{item.id} VERIFIED cannot be persisted until Evidline performs "
-            "reproducible verification"
-        )
+        _invalid(f"{item.id} VERIFIED cannot be persisted")
 
 
 def _validate_evidence(item: Evidence) -> None:
     _non_empty_string(item.description, f"{item.id}.description")
     _enum_instance(item.provenance, EvidenceProvenance, "provenance")
     _enum_instance(item.execution, Execution, "execution")
+    if (item.source_path is None) != (item.digest is None):
+        _invalid(f"{item.id}.source_path and digest must both be present or absent")
+    if item.source_path is not None:
+        _non_empty_string(item.source_path, f"{item.id}.source_path")
+        try:
+            normalized = _paths.normalize_root_relative_scope(item.source_path)
+        except ValueError as exc:
+            _invalid(f"{item.id}.source_path invalid: {exc}")
+        if normalized != item.source_path:
+            _invalid(f"{item.id}.source_path must be normalized: {item.source_path}")
     if item.digest is not None:
         _non_empty_string(item.digest, f"{item.id}.digest")
         if not _DIGEST_PATTERN.fullmatch(item.digest):

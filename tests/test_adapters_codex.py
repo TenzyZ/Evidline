@@ -78,7 +78,7 @@ def make_state(
         else ()
     )
     return StateDocument(
-        schema_version=3,
+        schema_version=4,
         revision=0,
         project=Project(
             name="Evidline",

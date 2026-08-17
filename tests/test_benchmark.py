@@ -87,6 +87,19 @@ class BenchmarkTests(unittest.TestCase):
             "SYNTHETIC_MAPPING_ONLY",
         )
 
+    def test_verify_scenarios(self) -> None:
+        self.assert_category_matched("verify")
+        mismatch = self.results["verify.evidence_digest_mismatch"]["actual"]
+        self.assertEqual(mismatch["verification"], "FAILED")
+        self.assertEqual(mismatch["reason"], "DIGEST_MISMATCH")
+        volatile = self.results[
+            "verify.claim_volatile_freshness_does_not_gate"
+        ]["actual"]
+        self.assertEqual(volatile["verification"], "VERIFIED")
+        no_write = self.results["verify.no_state_write"]["actual"]
+        self.assertTrue(no_write["state_bytes_unchanged"])
+        self.assertTrue(no_write["revision_unchanged"])
+
     def test_vab1_scoped_adapter_proofs(self) -> None:
         for scenario_id in (
             "claude.authorized_normal_mutation",
@@ -141,6 +154,7 @@ class BenchmarkTests(unittest.TestCase):
         }
         self.assertEqual(blockers["VAB-1"]["status"], "CLOSED")
         self.assertEqual(blockers["VAB-2"]["status"], "CLOSED")
+        self.assertEqual(blockers["VAB-3"]["status"], "OPEN")
         self.assertGreater(
             len([item for item in blockers.values() if item["status"] != "CLOSED"]),
             0,
