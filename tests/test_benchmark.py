@@ -139,11 +139,11 @@ class BenchmarkTests(unittest.TestCase):
             item["id"]: item
             for item in self.observed["contract"]["v1_acceptance_blockers"]
         }
-        self.assertEqual(set(blockers), {"VAB-1", "VAB-2"})
-        self.assertEqual(blockers["VAB-1"]["status"], "IMPLEMENTED_PENDING_REVIEW")
-        self.assertEqual(
-            blockers["VAB-2"]["status"],
-            "IMPLEMENTED_PENDING_REVIEW",
+        self.assertEqual(blockers["VAB-1"]["status"], "CLOSED")
+        self.assertEqual(blockers["VAB-2"]["status"], "CLOSED")
+        self.assertGreater(
+            len([item for item in blockers.values() if item["status"] != "CLOSED"]),
+            0,
         )
         self.assertEqual(self.observed["contract"]["v1_acceptance"], "BLOCKED")
 

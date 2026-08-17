@@ -113,13 +113,43 @@
     "v1_acceptance_blockers": [
       {
         "id": "VAB-1",
-        "status": "IMPLEMENTED_PENDING_REVIEW",
-        "title": "trusted scoped adapter ALLOW implemented; independent review pending"
+        "status": "CLOSED",
+        "title": "trusted scoped adapter ALLOW implemented and reviewed"
       },
       {
         "id": "VAB-2",
-        "status": "IMPLEMENTED_PENDING_REVIEW",
+        "status": "CLOSED",
         "title": "target-to-governed-invariant binding and acknowledgement enforcement"
+      },
+      {
+        "id": "VAB-3",
+        "status": "OPEN",
+        "title": "reproducible evidence verifier absent; persisted claims cannot reach VERIFIED"
+      },
+      {
+        "id": "VAB-4",
+        "status": "OPEN",
+        "title": "verified handoff absent; handoff profile is explicitly unverified"
+      },
+      {
+        "id": "VAB-5",
+        "status": "OPEN",
+        "title": "doctor / validation capability absent"
+      },
+      {
+        "id": "VAB-6",
+        "status": "OPEN",
+        "title": "supported Task and Invariant authoring surface absent"
+      },
+      {
+        "id": "VAB-7",
+        "status": "OPEN",
+        "title": "live harness evidence absent; installed dispatch, injection, and denial unattempted"
+      },
+      {
+        "id": "VAB-8",
+        "status": "UNRESOLVED",
+        "title": "V1 demo acceptance contract undefined"
       }
     ]
   },

@@ -105,13 +105,43 @@ SCENARIOS_BY_ID: Final = MappingProxyType({item.id: item for item in SCENARIOS})
 V1_ACCEPTANCE_BLOCKERS: Final = (
     {
         "id": "VAB-1",
-        "title": "trusted scoped adapter ALLOW implemented; independent review pending",
-        "status": "IMPLEMENTED_PENDING_REVIEW",
+        "title": "trusted scoped adapter ALLOW implemented and reviewed",
+        "status": "CLOSED",
     },
     {
         "id": "VAB-2",
         "title": "target-to-governed-invariant binding and acknowledgement enforcement",
-        "status": "IMPLEMENTED_PENDING_REVIEW",
+        "status": "CLOSED",
+    },
+    {
+        "id": "VAB-3",
+        "title": "reproducible evidence verifier absent; persisted claims cannot reach VERIFIED",
+        "status": "OPEN",
+    },
+    {
+        "id": "VAB-4",
+        "title": "verified handoff absent; handoff profile is explicitly unverified",
+        "status": "OPEN",
+    },
+    {
+        "id": "VAB-5",
+        "title": "doctor / validation capability absent",
+        "status": "OPEN",
+    },
+    {
+        "id": "VAB-6",
+        "title": "supported Task and Invariant authoring surface absent",
+        "status": "OPEN",
+    },
+    {
+        "id": "VAB-7",
+        "title": "live harness evidence absent; installed dispatch, injection, and denial unattempted",
+        "status": "OPEN",
+    },
+    {
+        "id": "VAB-8",
+        "title": "V1 demo acceptance contract undefined",
+        "status": "UNRESOLVED",
     },
 )
 
