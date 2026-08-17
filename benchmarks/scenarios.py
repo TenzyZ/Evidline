@@ -142,8 +142,8 @@ V1_ACCEPTANCE_BLOCKERS: Final = (
     },
     {
         "id": "VAB-6",
-        "title": "supported Task and Invariant authoring surface absent",
-        "status": "OPEN",
+        "title": "supported Task and Invariant authoring surface implemented and reviewed; authoring remains distinct from trusted authorization",
+        "status": "CLOSED",
     },
     {
         "id": "VAB-7",

@@ -96,7 +96,7 @@ policy evaluation. The benchmark also proves that acknowledgement does not
 suppress caller-asserted invariant conflicts and that both existing adapters
 transport the core BLOCK as denial.
 
-VAB-1, VAB-2, and VAB-3 closure does not invalidate the remaining V1 limitations below.
+VAB-1, VAB-2, VAB-3, and VAB-6 closure does not invalidate the remaining V1 limitations below.
 Because they are closed while other acceptance requirements remain unsatisfied,
 overall `v1_acceptance` remains `BLOCKED`.
 
@@ -108,8 +108,10 @@ and persisted VERIFIED stays prohibited** — is `CLOSED`.
 
 `VAB-5` — **doctor / validation capability absent** — is `OPEN`.
 
-`VAB-6` — **supported Task and Invariant authoring implementation exists** — is
-`OPEN` pending the accepted closure workflow.
+`VAB-6` — **supported Task and Invariant authoring surface implemented and reviewed; authoring remains distinct from trusted authorization** — is `CLOSED`.
+Closure is based on supported Task and Invariant authoring, governed_scope
+authoring, tests, the 74/74 synthetic benchmark, independent review, and the
+accepted merge. Authored Tasks remain untrusted until the existing approval ceremony.
 
 `VAB-7` — **live harness evidence absent; installed dispatch, injection, and
 denial unattempted** — is `OPEN`.

@@ -151,8 +151,8 @@
       },
       {
         "id": "VAB-6",
-        "status": "OPEN",
-        "title": "supported Task and Invariant authoring surface absent"
+        "status": "CLOSED",
+        "title": "supported Task and Invariant authoring surface implemented and reviewed; authoring remains distinct from trusted authorization"
       },
       {
         "id": "VAB-7",
