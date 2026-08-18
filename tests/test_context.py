@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import io
 import json
 import math
@@ -46,6 +47,7 @@ from evidline.state import (
     TaskStatus,
     Verification,
 )
+from evidline.verification import VerificationReason, VerificationResult
 
 
 def base_state(*, revision: int = 0) -> StateDocument:
@@ -170,12 +172,16 @@ def state_with_claim(claim_record: Claim) -> StateDocument:
 
 
 class CoreModelTests(unittest.TestCase):
-    def test_context_schema_version_is_one(self) -> None:
-        self.assertEqual(CONTEXT_SCHEMA_VERSION, 1)
+    def test_context_schema_version_is_two(self) -> None:
+        self.assertEqual(CONTEXT_SCHEMA_VERSION, 2)
 
     def test_profile_values(self) -> None:
         self.assertEqual(ContextProfile.SESSION.value, "session")
         self.assertEqual(ContextProfile.HANDOFF.value, "handoff")
+        self.assertEqual(
+            ContextProfile.VERIFIED_HANDOFF.value,
+            "verified-handoff",
+        )
 
     def test_handoff_chrome_contains_fixed_disclaimer(self) -> None:
         self.assertIn(
@@ -200,6 +206,11 @@ class CoreModelTests(unittest.TestCase):
                     state_with_active_task(),
                     profile=profile,
                     budget_chars=minimum_budget_chars(profile) - 1,
+                    verifications=(
+                        {}
+                        if profile is ContextProfile.VERIFIED_HANDOFF
+                        else None
+                    ),
                 )
 
     def test_budget_equal_to_minimum_is_valid(self) -> None:
@@ -208,6 +219,9 @@ class CoreModelTests(unittest.TestCase):
                 base_state(),
                 profile=profile,
                 budget_chars=minimum_budget_chars(profile),
+                verifications=(
+                    {} if profile is ContextProfile.VERIFIED_HANDOFF else None
+                ),
             )
             self.assertEqual(len(render_payload(ctx)), minimum_budget_chars(profile))
             self.assertEqual(ctx.budget.used_chars, len(render_payload(ctx)))
@@ -604,7 +618,16 @@ class BudgetTests(unittest.TestCase):
                 100000,
             ):
                 with self.subTest(profile=profile, budget=budget):
-                    ctx = compile_context(state_with_active_task(), profile=profile, budget_chars=budget)
+                    ctx = compile_context(
+                        state_with_active_task(),
+                        profile=profile,
+                        budget_chars=budget,
+                        verifications=(
+                            {}
+                            if profile is ContextProfile.VERIFIED_HANDOFF
+                            else None
+                        ),
+                    )
                     self.assert_used_equals_payload(ctx)
 
     def test_empty_state_payload_is_chrome_only(self) -> None:
@@ -618,6 +641,9 @@ class BudgetTests(unittest.TestCase):
                 base_state(),
                 profile=profile,
                 budget_chars=minimum_budget_chars(profile),
+                verifications=(
+                    {} if profile is ContextProfile.VERIFIED_HANDOFF else None
+                ),
             )
             self.assert_used_equals_payload(ctx)
 
@@ -1016,6 +1042,318 @@ class HandoffTruthfulnessTests(unittest.TestCase):
         for entry in ctx.report_entries:
             self.assertNotEqual(entry.rendered_freshness, "VERIFIED")
 
+    def test_session_and_handoff_payload_bytes_are_unchanged(self) -> None:
+        state = state_with_active_task()
+        self.assertEqual(
+            render_payload(
+                compile_context(state, profile=ContextProfile.SESSION)
+            ),
+            "EVIDLINE CONTEXT\n"
+            "profile: session\n"
+            "INVARIANTS\n"
+            "[INVARIANT inv-1] BLOCK — Never promote unsupported claims\n"
+            "REVALIDATE\n"
+            "CONTEXT\n"
+            "[TASK task-1] ACTIVE anchor — Implement context compiler\n"
+            "[DECISION dec-1] AUTHORIZED — Use local JSON state\n",
+        )
+        self.assertEqual(
+            render_payload(
+                compile_context(state, profile=ContextProfile.HANDOFF)
+            ),
+            "EVIDLINE CONTEXT\n"
+            "profile: handoff\n"
+            "NOTE: this is an unverified continuity representation, "
+            "not a verified handoff.\n"
+            "INVARIANTS\n"
+            "[INVARIANT inv-1] BLOCK — Never promote unsupported claims\n"
+            "REVALIDATE\n"
+            "CONTEXT\n"
+            "[TASK task-1] ACTIVE anchor — Implement context compiler\n"
+            "[DECISION dec-1] AUTHORIZED — Use local JSON state\n",
+        )
+
+
+class VerifiedHandoffTests(unittest.TestCase):
+    def results_for(
+        self,
+        state: StateDocument,
+        claim_result: VerificationResult,
+        evidence_result: VerificationResult,
+    ) -> dict[str, VerificationResult]:
+        return {
+            state.evidence[0].id: evidence_result,
+            state.claims[0].id: claim_result,
+        }
+
+    def compile_one(
+        self,
+        claim_record: Claim,
+        claim_result: VerificationResult,
+        evidence_result: VerificationResult,
+    ) -> CompiledContext:
+        state = state_with_claim(claim_record)
+        return compile_context(
+            state,
+            profile=ContextProfile.VERIFIED_HANDOFF,
+            verifications=self.results_for(
+                state,
+                claim_result,
+                evidence_result,
+            ),
+        )
+
+    def test_verified_profile_uses_handoff_selection_and_truthful_header(self) -> None:
+        state = replace(
+            state_with_active_task(),
+            tasks=(
+                task("task-1", "Implement context compiler"),
+                task(
+                    "task-2",
+                    "Old context compiler task",
+                    status=TaskStatus.DONE,
+                ),
+            ),
+        )
+        ctx = compile_context(
+            state,
+            profile=ContextProfile.VERIFIED_HANDOFF,
+            verifications={},
+        )
+        payload = render_payload(ctx)
+        self.assertIn("task-2", {entry.record_id for entry in ctx.entries})
+        self.assertIn("derived in this invocation", payload)
+        self.assertIn("not globally certified", payload)
+        self.assertIn("not byte-verified records", payload)
+        for entry in ctx.report_entries:
+            self.assertIsNone(entry.current_verification)
+            self.assertIsNone(entry.current_verification_reason)
+
+    def test_verified_digest_binding_is_included_and_marked_now(self) -> None:
+        ctx = self.compile_one(
+            claim(
+                "claim-1",
+                "A digest matches",
+                ClaimFreshness.DIGEST_BOUND,
+                evidence_ids=("evidence-1",),
+            ),
+            VerificationResult(
+                Verification.VERIFIED,
+                VerificationReason.ALL_EVIDENCE_VERIFIED,
+            ),
+            VerificationResult(
+                Verification.VERIFIED,
+                VerificationReason.DIGEST_MATCH,
+            ),
+        )
+        entry = next(item for item in ctx.entries if item.record_id == "claim-1")
+        self.assertIs(entry.disposition, Disposition.INCLUDED)
+        self.assertNotIn(ReasonCode.DIGEST_NOT_RECHECKED, entry.reasons)
+        self.assertIn(ReasonCode.VERIFIED_NOW, entry.reasons)
+        self.assertIs(entry.current_verification, Verification.VERIFIED)
+        self.assertNotEqual(entry.rendered_freshness, "VERIFIED")
+        self.assertIn("current:VERIFIED", render_payload(ctx))
+
+    def test_verified_persisted_volatile_remains_revalidate(self) -> None:
+        ctx = self.compile_one(
+            claim(
+                "claim-1",
+                "A volatile digest matches",
+                ClaimFreshness.PERSISTED_VOLATILE,
+                evidence_ids=("evidence-1",),
+            ),
+            VerificationResult(
+                Verification.VERIFIED,
+                VerificationReason.ALL_EVIDENCE_VERIFIED,
+            ),
+            VerificationResult(
+                Verification.VERIFIED,
+                VerificationReason.DIGEST_MATCH,
+            ),
+        )
+        entry = next(item for item in ctx.entries if item.record_id == "claim-1")
+        self.assertIs(entry.disposition, Disposition.REVALIDATE)
+        self.assertIn(ReasonCode.VOLATILE_MUST_REVALIDATE, entry.reasons)
+        self.assertIs(entry.current_verification, Verification.VERIFIED)
+
+    def test_failed_is_forced_to_revalidate_with_machine_reason(self) -> None:
+        ctx = self.compile_one(
+            claim(
+                "claim-1",
+                "A digest changed",
+                ClaimFreshness.DIGEST_BOUND,
+                evidence_ids=("evidence-1",),
+            ),
+            VerificationResult(
+                Verification.FAILED,
+                VerificationReason.EVIDENCE_FAILED,
+            ),
+            VerificationResult(
+                Verification.FAILED,
+                VerificationReason.DIGEST_MISMATCH,
+            ),
+        )
+        entry = next(item for item in ctx.entries if item.record_id == "claim-1")
+        self.assertIs(entry.disposition, Disposition.REVALIDATE)
+        self.assertIn(ReasonCode.CURRENT_VERIFICATION_FAILED, entry.reasons)
+        self.assertIs(entry.current_verification, Verification.FAILED)
+        self.assertIs(
+            entry.current_verification_reason,
+            VerificationReason.EVIDENCE_FAILED,
+        )
+        self.assertNotIn(entry, [
+            item
+            for item in ctx.entries
+            if item.disposition is Disposition.INCLUDED
+            and item.current_verification is Verification.FAILED
+        ])
+
+    def test_unverified_is_never_promoted(self) -> None:
+        ctx = self.compile_one(
+            claim(
+                "claim-1",
+                "A durable unresolved claim",
+                ClaimFreshness.DURABLE_UNTIL_SUPERSEDED,
+            ),
+            VerificationResult(
+                Verification.UNVERIFIED,
+                VerificationReason.CLAIM_NOT_REPRODUCIBLE,
+            ),
+            VerificationResult(
+                Verification.UNVERIFIED,
+                VerificationReason.BINDING_ABSENT,
+            ),
+        )
+        entry = next(item for item in ctx.entries if item.record_id == "claim-1")
+        self.assertIs(entry.disposition, Disposition.INCLUDED)
+        self.assertIs(entry.current_verification, Verification.UNVERIFIED)
+        self.assertNotIn(ReasonCode.VERIFIED_NOW, entry.reasons)
+        self.assertNotIn("current:VERIFIED", render_payload(ctx))
+
+    def test_persisted_failed_fresh_verified_preserves_persisted_semantics(self) -> None:
+        failed_claim = Claim(
+            id="claim-1",
+            description="Historical failure now reproduces",
+            freshness=ClaimFreshness.DIGEST_BOUND,
+            verification=Verification.FAILED,
+            reproducible=True,
+            evidence_ids=("evidence-1",),
+        )
+        ctx = self.compile_one(
+            failed_claim,
+            VerificationResult(
+                Verification.VERIFIED,
+                VerificationReason.ALL_EVIDENCE_VERIFIED,
+            ),
+            VerificationResult(
+                Verification.VERIFIED,
+                VerificationReason.DIGEST_MATCH,
+            ),
+        )
+        entry = next(item for item in ctx.entries if item.record_id == "claim-1")
+        self.assertIs(entry.disposition, Disposition.REVALIDATE)
+        self.assertEqual(entry.rendered_freshness, "FAILED")
+        self.assertIn(ReasonCode.FAILED_VERIFICATION, entry.reasons)
+        self.assertIn(ReasonCode.VERIFIED_NOW, entry.reasons)
+        self.assertIs(entry.current_verification, Verification.VERIFIED)
+
+    def test_partial_results_render_deterministically_and_budget_exactly(self) -> None:
+        evidence_records = tuple(
+            replace(
+                one_evidence(),
+                id=f"evidence-{index}",
+                source_path=f"evidence/source-{index}.txt",
+            )
+            for index in range(1, 4)
+        )
+        claim_records = (
+            claim(
+                "claim-verified",
+                "Compiler verified binding",
+                ClaimFreshness.DIGEST_BOUND,
+                evidence_ids=("evidence-1",),
+            ),
+            claim(
+                "claim-failed",
+                "Compiler failed binding",
+                ClaimFreshness.DIGEST_BOUND,
+                evidence_ids=("evidence-2",),
+            ),
+            claim(
+                "claim-unverified",
+                "Compiler unavailable binding",
+                ClaimFreshness.DIGEST_BOUND,
+                evidence_ids=("evidence-3",),
+            ),
+        )
+        state = replace(
+            state_with_active_task(),
+            tasks=(
+                task(
+                    "task-1",
+                    "Implement context compiler",
+                    related=tuple(item.id for item in claim_records),
+                ),
+            ),
+            claims=claim_records,
+            evidence=evidence_records,
+        )
+        verifications = {
+            "evidence-1": VerificationResult(
+                Verification.VERIFIED, VerificationReason.DIGEST_MATCH
+            ),
+            "evidence-2": VerificationResult(
+                Verification.FAILED, VerificationReason.DIGEST_MISMATCH
+            ),
+            "evidence-3": VerificationResult(
+                Verification.UNVERIFIED, VerificationReason.SOURCE_MISSING
+            ),
+            "claim-verified": VerificationResult(
+                Verification.VERIFIED,
+                VerificationReason.ALL_EVIDENCE_VERIFIED,
+            ),
+            "claim-failed": VerificationResult(
+                Verification.FAILED, VerificationReason.EVIDENCE_FAILED
+            ),
+            "claim-unverified": VerificationResult(
+                Verification.UNVERIFIED,
+                VerificationReason.EVIDENCE_UNVERIFIED,
+            ),
+        }
+        first = compile_context(
+            state,
+            profile=ContextProfile.VERIFIED_HANDOFF,
+            verifications=verifications,
+        )
+        second = compile_context(
+            state,
+            profile=ContextProfile.VERIFIED_HANDOFF,
+            verifications=verifications,
+        )
+        self.assertEqual(
+            (render_payload(first), render_report(first), render_json(first)),
+            (render_payload(second), render_report(second), render_json(second)),
+        )
+        self.assertEqual(first.budget.used_chars, len(render_payload(first)))
+        self.assertNotIn("all records verified", render_payload(first).casefold())
+        for entry in first.report_entries:
+            self.assertNotEqual(entry.rendered_freshness, "VERIFIED")
+        machine = json.loads(render_json(first))
+        records = {item["record_id"]: item for item in machine["records"]}
+        self.assertEqual(records["claim-verified"]["current_verification"], "VERIFIED")
+        self.assertEqual(records["claim-failed"]["current_verification_reason"], "EVIDENCE_FAILED")
+        self.assertIsNone(records["task-1"]["current_verification"])
+
+    def test_verification_mapping_is_rejected_for_other_profiles(self) -> None:
+        for profile in (ContextProfile.SESSION, ContextProfile.HANDOFF):
+            with self.subTest(profile=profile):
+                with self.assertRaises(ContextInputError):
+                    compile_context(
+                        state_with_active_task(),
+                        profile=profile,
+                        verifications={},
+                    )
+
 
 class DeterminismAndPurityTests(unittest.TestCase):
     def test_repeated_compile_and_render_is_byte_identical(self) -> None:
@@ -1046,7 +1384,7 @@ class DeterminismAndPurityTests(unittest.TestCase):
         state = state_with_active_task()
         ctx = compile_context(state)
         document = json.loads(render_json(ctx))
-        self.assertEqual(document["schema_version"], 1)
+        self.assertEqual(document["schema_version"], 2)
         self.assertEqual(document["state_revision"], 0)
         self.assertEqual(document["profile"], "session")
         self.assertEqual(len(document["records"]), len(state.invariants) + len(state.tasks) + len(state.decisions))
@@ -1083,6 +1421,24 @@ class DeterminismAndPurityTests(unittest.TestCase):
 
     def test_pure_compiler_performs_no_filesystem_io(self) -> None:
         state = state_with_active_task()
+        verified_state = state_with_claim(
+            claim(
+                "claim-1",
+                "A digest matches",
+                ClaimFreshness.DIGEST_BOUND,
+                evidence_ids=("evidence-1",),
+            )
+        )
+        verifications = {
+            "evidence-1": VerificationResult(
+                Verification.VERIFIED,
+                VerificationReason.DIGEST_MATCH,
+            ),
+            "claim-1": VerificationResult(
+                Verification.VERIFIED,
+                VerificationReason.ALL_EVIDENCE_VERIFIED,
+            ),
+        }
         with mock.patch(
             "pathlib.Path.read_text", side_effect=RuntimeError("fs read")
         ), mock.patch(
@@ -1093,8 +1449,14 @@ class DeterminismAndPurityTests(unittest.TestCase):
             "builtins.open", side_effect=RuntimeError("fs open")
         ):
             ctx = compile_context(state)
+            verified_ctx = compile_context(
+                verified_state,
+                profile=ContextProfile.VERIFIED_HANDOFF,
+                verifications=verifications,
+            )
         self.assertIsNotNone(ctx)
         self.assertGreater(len(render_payload(ctx)), 0)
+        self.assertIn("current:VERIFIED", render_payload(verified_ctx))
 
     def test_no_clock_dependency(self) -> None:
         for clock in ("evidline.context.time", "evidline.context.datetime"):
@@ -1144,6 +1506,55 @@ class WrapperTests(unittest.TestCase):
             self.assertIsInstance(ctx, CompiledContext)
         finally:
             os.chdir(original)
+
+    def test_verified_handoff_wrapper_owns_verification_io_without_writes(self) -> None:
+        from evidline.state import serialize_state
+
+        source_bytes = b"fresh verified handoff\n"
+        evidence_record = replace(
+            one_evidence(),
+            source_path="evidence/observed.txt",
+            digest="sha256:" + hashlib.sha256(source_bytes).hexdigest(),
+        )
+        claim_record = replace(
+            claim(
+                "claim-1",
+                "Fresh verified handoff binding",
+                ClaimFreshness.DIGEST_BOUND,
+                evidence_ids=("evidence-1",),
+            ),
+            reproducible=True,
+        )
+        state = replace(
+            state_with_active_task(),
+            tasks=(
+                task(
+                    "task-1",
+                    "Implement context compiler",
+                    related=("claim-1",),
+                ),
+            ),
+            claims=(claim_record,),
+            evidence=(evidence_record,),
+        )
+        (self.root / "evidence").mkdir()
+        (self.root / "evidence" / "observed.txt").write_bytes(source_bytes)
+        (self.root / ".evidline").mkdir()
+        state_path = self.root / ".evidline" / "state.json"
+        state_path.write_text(serialize_state(state), encoding="utf-8")
+        before = state_path.read_bytes()
+
+        ctx = load_and_compile(
+            self.root,
+            profile=ContextProfile.VERIFIED_HANDOFF,
+        )
+
+        self.assertEqual(state_path.read_bytes(), before)
+        entries = {entry.record_id: entry for entry in ctx.report_entries}
+        self.assertIs(
+            entries["claim-1"].current_verification,
+            Verification.VERIFIED,
+        )
 
 
 class CliTests(unittest.TestCase):
@@ -1195,6 +1606,19 @@ class CliTests(unittest.TestCase):
         code, stdout, stderr = self.run_cli("context", "--profile", "handoff")
         self.assertEqual(code, 0)
         self.assertIn("unverified continuity representation", stdout)
+
+    def test_context_verified_handoff_profile(self) -> None:
+        for fmt in ("payload", "report", "json"):
+            with self.subTest(fmt=fmt):
+                code, stdout, stderr = self.run_cli(
+                    "context",
+                    "--profile",
+                    "verified-handoff",
+                    "--format",
+                    fmt,
+                )
+                self.assertEqual((code, stderr), (0, ""))
+                self.assertTrue(stdout)
 
     def test_context_budget_option(self) -> None:
         code, stdout, stderr = self.run_cli("context", "--budget", "1000")

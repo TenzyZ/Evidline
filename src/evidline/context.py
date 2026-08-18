@@ -27,8 +27,9 @@ from typing import Any, Final, Mapping
 
 from evidline import paths as _paths
 from evidline import state as _state
+from evidline import verification as _verification
 
-CONTEXT_SCHEMA_VERSION: Final = 1
+CONTEXT_SCHEMA_VERSION: Final = 2
 
 _TOKEN_PATTERN = re.compile(r"\w+", re.UNICODE)
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -49,6 +50,11 @@ _HANDOFF_DISCLAIMER: Final = (
     "NOTE: this is an unverified continuity representation, "
     "not a verified handoff."
 )
+_VERIFIED_HANDOFF_DISCLAIMER: Final = (
+    "NOTE: current verification was derived in this invocation per verifiable "
+    "Claim/Evidence record; this payload is not globally certified. Tasks, "
+    "Decisions, and Invariants are continuity records, not byte-verified records."
+)
 
 
 class ContextProfile(str, Enum):
@@ -56,6 +62,12 @@ class ContextProfile(str, Enum):
 
     SESSION = "session"
     HANDOFF = "handoff"
+    VERIFIED_HANDOFF = "verified-handoff"
+
+
+_HANDOFF_PROFILES: Final = frozenset(
+    {ContextProfile.HANDOFF, ContextProfile.VERIFIED_HANDOFF}
+)
 
 
 class Disposition(str, Enum):
@@ -86,6 +98,8 @@ class ReasonCode(str, Enum):
     DIGEST_NOT_RECHECKED = "DIGEST_NOT_RECHECKED"
     VOLATILE_MUST_REVALIDATE = "VOLATILE_MUST_REVALIDATE"
     FAILED_VERIFICATION = "FAILED_VERIFICATION"
+    VERIFIED_NOW = "VERIFIED_NOW"
+    CURRENT_VERIFICATION_FAILED = "CURRENT_VERIFICATION_FAILED"
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
     NO_ACTIVE_TASK = "NO_ACTIVE_TASK"
     INVARIANT_BUDGET_OVERFLOW = "INVARIANT_BUDGET_OVERFLOW"
@@ -124,6 +138,8 @@ class ContextEntry:
     reasons: tuple[ReasonCode, ...]
     description: str = ""
     discriminator: str = ""
+    current_verification: _state.Verification | None = None
+    current_verification_reason: _verification.VerificationReason | None = None
 
     def __post_init__(self) -> None:
         seen: set[ReasonCode] = set()
@@ -187,6 +203,7 @@ def compile_context(
     *,
     profile: ContextProfile = ContextProfile.SESSION,
     budget_chars: int | None = None,
+    verifications: Mapping[str, _verification.VerificationResult] | None = None,
 ) -> CompiledContext:
     """Compile a validated state document into a bounded, explainable context.
 
@@ -195,6 +212,7 @@ def compile_context(
     """
     _validate_profile(profile)
     _state.validate_state(state)
+    verified_results = _validate_verifications(state, profile, verifications)
     resolved_budget = (
         budget_chars if budget_chars is not None else state.project.default_budget_chars
     )
@@ -212,6 +230,15 @@ def compile_context(
     kinds = _kind_by_id(state)
     anchor_tokens = _tokens(task.description) if task is not None else frozenset()
     selected, rule_excluded = _select_bands(state, task, kinds, profile, anchor_tokens)
+    if verified_results is not None:
+        selected = [
+            _apply_current_verification(entry, kinds, verified_results)
+            for entry in selected
+        ]
+        rule_excluded = [
+            _apply_current_verification(entry, kinds, verified_results)
+            for entry in rule_excluded
+        ]
 
     order = sorted(
         selected,
@@ -274,7 +301,17 @@ def load_and_compile(
     if root is None:
         raise _state.StateNotInitializedError("no initialized Evidline root discovered")
     state = _state.load_state(root)
-    return compile_context(state, profile=profile, budget_chars=budget_chars)
+    verifications = (
+        _verification.verify_state(root, state)
+        if profile is ContextProfile.VERIFIED_HANDOFF
+        else None
+    )
+    return compile_context(
+        state,
+        profile=profile,
+        budget_chars=budget_chars,
+        verifications=verifications,
+    )
 
 
 def render_payload(ctx: CompiledContext) -> str:
@@ -336,6 +373,18 @@ def render_report(ctx: CompiledContext) -> str:
                     f"kind={entry.kind.value}",
                     f"id={entry.record_id}",
                     f"freshness={entry.rendered_freshness}",
+                    "current_verification="
+                    + (
+                        entry.current_verification.value
+                        if entry.current_verification is not None
+                        else "-"
+                    ),
+                    "current_verification_reason="
+                    + (
+                        entry.current_verification_reason.value
+                        if entry.current_verification_reason is not None
+                        else "-"
+                    ),
                     f"reasons={_format_reasons(entry.reasons)}",
                 )
             )
@@ -366,6 +415,16 @@ def render_json(ctx: CompiledContext) -> str:
                 "score": entry.score,
                 "disposition": entry.disposition.value,
                 "rendered_freshness": entry.rendered_freshness,
+                "current_verification": (
+                    entry.current_verification.value
+                    if entry.current_verification is not None
+                    else None
+                ),
+                "current_verification_reason": (
+                    entry.current_verification_reason.value
+                    if entry.current_verification_reason is not None
+                    else None
+                ),
                 "reasons": [code.value for code in entry.reasons],
             }
             for entry in ctx.report_entries
@@ -385,6 +444,48 @@ def report_chars(ctx: CompiledContext) -> int:
 def _validate_profile(profile: ContextProfile) -> None:
     if not isinstance(profile, ContextProfile):
         raise ContextInputError("profile must be a ContextProfile")
+
+
+def _validate_verifications(
+    state: _state.StateDocument,
+    profile: ContextProfile,
+    verifications: Mapping[str, _verification.VerificationResult] | None,
+) -> Mapping[str, _verification.VerificationResult] | None:
+    if profile is not ContextProfile.VERIFIED_HANDOFF:
+        if verifications is not None:
+            raise ContextInputError(
+                "verifications are valid only for the verified-handoff profile"
+            )
+        return None
+    if not isinstance(verifications, Mapping):
+        raise ContextInputError(
+            "verified-handoff requires a complete verification mapping"
+        )
+    expected_ids = {
+        record.id for records in (state.evidence, state.claims) for record in records
+    }
+    if set(verifications) != expected_ids:
+        raise ContextInputError(
+            "verified-handoff requires exactly one result per Claim/Evidence record"
+        )
+    if any(
+        type(result) is not _verification.VerificationResult
+        for result in verifications.values()
+    ):
+        raise ContextInputError(
+            "verified-handoff verification values must be VerificationResult"
+        )
+    if any(
+        result.verification not in (
+            _state.Verification.VERIFIED,
+            _state.Verification.FAILED,
+            _state.Verification.UNVERIFIED,
+        )
+        or not isinstance(result.reason, _verification.VerificationReason)
+        for result in verifications.values()
+    ):
+        raise ContextInputError("verified-handoff verification results are invalid")
+    return verifications
 
 
 def _validate_compiled(ctx: CompiledContext) -> None:
@@ -534,7 +635,7 @@ def _select_bands(
             else:
                 select(record, 2, 0)
         elif kind is RecordKind.TASK and record.status is _state.TaskStatus.DONE:
-            if profile is ContextProfile.HANDOFF:
+            if profile in _HANDOFF_PROFILES:
                 select(record, 2, 0)
             else:
                 rule_excluded(record, 2, 0, (ReasonCode.RULE_EXCLUDED,))
@@ -570,7 +671,7 @@ def _select_bands(
         if record.status is _state.TaskStatus.ACTIVE:
             continue
         if record.status is _state.TaskStatus.DONE:
-            if profile is ContextProfile.HANDOFF:
+            if profile in _HANDOFF_PROFILES:
                 continue  # eligible through band 6 below
             rule_excluded(record, 6, 0, (ReasonCode.RULE_EXCLUDED,))
         else:
@@ -587,7 +688,7 @@ def _select_bands(
     for record in state.tasks:
         if (
             record.status is _state.TaskStatus.DONE
-            and profile is ContextProfile.HANDOFF
+            and profile in _HANDOFF_PROFILES
             and record.id not in selected
         ):
             score = _lexical_score(record.description, anchor_tokens)
@@ -647,6 +748,49 @@ def _make_entry(
         reasons=reasons,
         description=_normalized_description(record),
         discriminator=_discriminator(record),
+    )
+
+
+def _apply_current_verification(
+    entry: ContextEntry,
+    kinds: Mapping[str, tuple[RecordKind, Any]],
+    verifications: Mapping[str, _verification.VerificationResult],
+) -> ContextEntry:
+    result = verifications.get(entry.record_id)
+    if result is None:
+        return entry
+
+    reasons = list(entry.reasons)
+    disposition = entry.disposition
+    if result.verification is _state.Verification.VERIFIED:
+        reasons = [
+            reason for reason in reasons if reason is not ReasonCode.DIGEST_NOT_RECHECKED
+        ]
+        reasons.append(ReasonCode.VERIFIED_NOW)
+        record = kinds[entry.record_id][1]
+        independent_revalidation = isinstance(record, _state.Claim) and (
+            record.freshness is _state.ClaimFreshness.PERSISTED_VOLATILE
+            or record.verification is _state.Verification.FAILED
+        )
+        if disposition is Disposition.REVALIDATE and not independent_revalidation:
+            disposition = Disposition.INCLUDED
+    elif result.verification is _state.Verification.FAILED:
+        reasons.append(ReasonCode.CURRENT_VERIFICATION_FAILED)
+        if disposition is not Disposition.EXCLUDED:
+            disposition = Disposition.REVALIDATE
+
+    return ContextEntry(
+        record_id=entry.record_id,
+        kind=entry.kind,
+        band=entry.band,
+        score=entry.score,
+        disposition=disposition,
+        rendered_freshness=entry.rendered_freshness,
+        reasons=tuple(dict.fromkeys(reasons)),
+        description=entry.description,
+        discriminator=entry.discriminator,
+        current_verification=result.verification,
+        current_verification_reason=result.reason,
     )
 
 
@@ -744,6 +888,8 @@ def _budget_excluded(entry: ContextEntry) -> ContextEntry:
         reasons=tuple(dict.fromkeys(entry.reasons + (ReasonCode.BUDGET_EXHAUSTED,))),
         description=entry.description,
         discriminator=entry.discriminator,
+        current_verification=entry.current_verification,
+        current_verification_reason=entry.current_verification_reason,
     )
 
 
@@ -767,6 +913,8 @@ def _render_payload_frame(
     parts = ["EVIDLINE CONTEXT", f"profile: {profile.value}"]
     if profile is ContextProfile.HANDOFF:
         parts.append(_HANDOFF_DISCLAIMER)
+    elif profile is ContextProfile.VERIFIED_HANDOFF:
+        parts.append(_VERIFIED_HANDOFF_DISCLAIMER)
     parts.append("INVARIANTS")
     parts.extend(invariant_blocks)
     parts.append("REVALIDATE")
@@ -787,6 +935,10 @@ def _render_entry(entry: ContextEntry) -> str:
         head = f"[{entry.kind.value} {entry.record_id}] {entry.discriminator}"
         if entry.band == 1:
             head += " anchor"
+    if entry.current_verification is not None:
+        head += f" current:{entry.current_verification.value}"
+        if entry.current_verification_reason is not None:
+            head += f" reason:{entry.current_verification_reason.value}"
     return f"{head} — {entry.description}"
 
 

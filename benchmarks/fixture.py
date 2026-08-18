@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import hashlib
 import os
 from pathlib import Path
 import tempfile
@@ -24,6 +25,7 @@ from evidline.state import (
     Task,
     TaskStatus,
     Verification,
+    VerifierRule,
     serialize_state,
     validate_state,
 )
@@ -46,6 +48,15 @@ EMPTY_SOURCE_DIGEST = (
 )
 BINARY_SOURCE_DIGEST = (
     "sha256:04166a656a4f859ecc91d52208afc20b22f26d39e02947aaeb0c486e1e1a9086"
+)
+HANDOFF_MATCHING_BYTES = b"phase 11 verified handoff\n"
+HANDOFF_CHANGED_BYTES = b"phase 11 changed source\n"
+HANDOFF_EXPECTED_BYTES = b"phase 11 expected source\n"
+HANDOFF_MATCHING_DIGEST = (
+    "sha256:" + hashlib.sha256(HANDOFF_MATCHING_BYTES).hexdigest()
+)
+HANDOFF_EXPECTED_DIGEST = (
+    "sha256:" + hashlib.sha256(HANDOFF_EXPECTED_BYTES).hexdigest()
 )
 
 
@@ -362,6 +373,159 @@ def build_verification_state() -> StateDocument:
     return state
 
 
+def build_handoff_state() -> StateDocument:
+    """Return the isolated Phase 11 verified-handoff fixture state."""
+
+    evidence = (
+        Evidence(
+            id="evidence-handoff-matching",
+            description="Current matching handoff source",
+            provenance=EvidenceProvenance.DIRECT_OBSERVATION,
+            execution=Execution.EXECUTED,
+            source_path="handoff/matching.txt",
+            digest=HANDOFF_MATCHING_DIGEST,
+        ),
+        Evidence(
+            id="evidence-handoff-changed",
+            description="Current changed handoff source",
+            provenance=EvidenceProvenance.DIRECT_OBSERVATION,
+            execution=Execution.EXECUTED,
+            source_path="handoff/changed.txt",
+            digest=HANDOFF_EXPECTED_DIGEST,
+        ),
+        Evidence(
+            id="evidence-handoff-missing",
+            description="Current missing handoff source",
+            provenance=EvidenceProvenance.DIRECT_OBSERVATION,
+            execution=Execution.EXECUTED,
+            source_path="handoff/missing.txt",
+            digest=HANDOFF_MATCHING_DIGEST,
+        ),
+        Evidence(
+            id="evidence-handoff-unsafe",
+            description="Protected handoff source",
+            provenance=EvidenceProvenance.DIRECT_OBSERVATION,
+            execution=Execution.EXECUTED,
+            source_path=".evidline/state.json",
+            digest=HANDOFF_MATCHING_DIGEST,
+        ),
+    )
+    claims = (
+        Claim(
+            id="claim-handoff-matching",
+            description="Verified handoff matching binding",
+            freshness=ClaimFreshness.DIGEST_BOUND,
+            verification=Verification.UNVERIFIED,
+            reproducible=True,
+            evidence_ids=("evidence-handoff-matching",),
+        ),
+        Claim(
+            id="claim-handoff-changed",
+            description="Verified handoff changed binding",
+            freshness=ClaimFreshness.DIGEST_BOUND,
+            verification=Verification.UNVERIFIED,
+            reproducible=True,
+            evidence_ids=("evidence-handoff-changed",),
+        ),
+        Claim(
+            id="claim-handoff-missing",
+            description="Verified handoff missing binding",
+            freshness=ClaimFreshness.DIGEST_BOUND,
+            verification=Verification.UNVERIFIED,
+            reproducible=True,
+            evidence_ids=("evidence-handoff-missing",),
+        ),
+        Claim(
+            id="claim-handoff-unsafe",
+            description="Verified handoff unsafe binding",
+            freshness=ClaimFreshness.DIGEST_BOUND,
+            verification=Verification.UNVERIFIED,
+            reproducible=True,
+            evidence_ids=("evidence-handoff-unsafe",),
+        ),
+        Claim(
+            id="claim-handoff-volatile",
+            description="Verified handoff volatile binding",
+            freshness=ClaimFreshness.PERSISTED_VOLATILE,
+            verification=Verification.UNVERIFIED,
+            reproducible=True,
+            evidence_ids=("evidence-handoff-matching",),
+        ),
+        Claim(
+            id="claim-handoff-historical-failed",
+            description="Historical failure with current matching bytes",
+            freshness=ClaimFreshness.DIGEST_BOUND,
+            verification=Verification.FAILED,
+            reproducible=True,
+            evidence_ids=("evidence-handoff-matching",),
+            verifier_rule=VerifierRule.R1_DIGEST_MATCH,
+            verified_at=APPROVED_AT,
+            verifying_evidence_ids=("evidence-handoff-matching",),
+        ),
+    )
+    state = StateDocument(
+        schema_version=4,
+        revision=11,
+        project=Project(
+            name="Evidline verified handoff benchmark",
+            purpose="Measure deterministic current continuity verification",
+            ignore_globs=(),
+            default_budget_chars=20000,
+        ),
+        invariants=(
+            Invariant(
+                id="inv-handoff",
+                description="Preserve verified handoff truth boundaries",
+                enforcement=InvariantEnforcement.BLOCK,
+                status=InvariantStatus.ACTIVE,
+            ),
+        ),
+        decisions=(
+            Decision(
+                id="dec-handoff",
+                description="Use ephemeral per-record handoff verification",
+                intent=Intent.AUTHORIZED,
+                execution=Execution.NOT_RUN,
+                approved_at=APPROVED_AT,
+                approval_channel=APPROVAL_CHANNEL,
+                asserted_actor="human",
+            ),
+        ),
+        tasks=(
+            Task(
+                id="task-handoff-active",
+                description="Implement verified handoff continuity",
+                status=TaskStatus.ACTIVE,
+                intent=Intent.AUTHORIZED,
+                execution=Execution.NOT_RUN,
+                related_ids=(
+                    "dec-handoff",
+                    "task-handoff-done",
+                    *(claim.id for claim in claims),
+                ),
+                approved_at=APPROVED_AT,
+                approval_channel=APPROVAL_CHANNEL,
+                asserted_actor="human",
+            ),
+            Task(
+                id="task-handoff-done",
+                description="Preserve verified handoff continuity history",
+                status=TaskStatus.DONE,
+                intent=Intent.AUTHORIZED,
+                execution=Execution.EXECUTED,
+                approved_at=APPROVED_AT,
+                approval_channel=APPROVAL_CHANNEL,
+                asserted_actor="human",
+            ),
+        ),
+        claims=claims,
+        evidence=evidence,
+        counters={"claim": len(claims), "evidence": len(evidence)},
+    )
+    validate_state(state)
+    return state
+
+
 @dataclass(slots=True)
 class BenchmarkFixture:
     """One independently located benchmark fixture."""
@@ -371,8 +535,10 @@ class BenchmarkFixture:
     root: Path
     outside: Path
     no_root: Path
+    handoff_root: Path
     state: StateDocument
     verification_state: StateDocument
+    handoff_state: StateDocument
 
     @classmethod
     def create(cls) -> "BenchmarkFixture":
@@ -381,14 +547,17 @@ class BenchmarkFixture:
         root = sandbox / "project"
         outside = sandbox / "outside.py"
         no_root = sandbox / "uninitialized" / "nested"
+        handoff_root = sandbox / "handoff-project"
         fixture = cls(
             temporary,
             sandbox,
             root,
             outside,
             no_root,
+            handoff_root,
             build_state(),
             build_verification_state(),
+            build_handoff_state(),
         )
         try:
             fixture._materialize()
@@ -419,6 +588,9 @@ class BenchmarkFixture:
         root.mkdir(parents=True, exist_ok=True)
         return root
 
+    def handoff_target(self, relative: str) -> Path:
+        return self.assert_sandbox_path(self.handoff_root / relative)
+
     def write_state(self, state: StateDocument | None = None) -> None:
         document = self.state if state is None else state
         state_path = self.target(".evidline/state.json")
@@ -426,6 +598,12 @@ class BenchmarkFixture:
 
     def write_invalid_state(self) -> None:
         self.target(".evidline/state.json").write_text("{invalid\n", encoding="utf-8")
+
+    def write_handoff_state(self) -> None:
+        self.handoff_target(".evidline/state.json").write_text(
+            serialize_state(self.handoff_state),
+            encoding="utf-8",
+        )
 
     def remove_state(self) -> None:
         self.target(".evidline/state.json").unlink()
@@ -466,6 +644,8 @@ class BenchmarkFixture:
             self.root / "src" / ".git",
             self.root / "src" / "governed",
             self.root / "docs",
+            self.handoff_root / ".evidline",
+            self.handoff_root / "handoff",
             self.no_root,
         ):
             self.assert_sandbox_path(directory).mkdir(parents=True, exist_ok=True)
@@ -488,3 +668,10 @@ class BenchmarkFixture:
         for path, data in verification_files.items():
             self.assert_sandbox_path(path).write_bytes(data)
         self.write_state()
+        handoff_files = {
+            self.handoff_root / "handoff" / "matching.txt": HANDOFF_MATCHING_BYTES,
+            self.handoff_root / "handoff" / "changed.txt": HANDOFF_CHANGED_BYTES,
+        }
+        for path, data in handoff_files.items():
+            self.assert_sandbox_path(path).write_bytes(data)
+        self.write_handoff_state()

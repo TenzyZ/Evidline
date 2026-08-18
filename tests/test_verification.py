@@ -14,11 +14,18 @@ from evidline import paths
 from evidline.state import (
     Claim,
     ClaimFreshness,
+    Decision,
     Evidence,
     EvidenceProvenance,
     Execution,
+    Intent,
+    Invariant,
+    InvariantEnforcement,
+    InvariantStatus,
     Project,
     StateDocument,
+    Task,
+    TaskStatus,
     Verification,
     VerifierRule,
 )
@@ -27,6 +34,7 @@ from evidline.verification import (
     VerificationReason,
     verify_claim,
     verify_evidence,
+    verify_state,
 )
 
 
@@ -621,6 +629,136 @@ class ClaimVerificationTests(VerificationTestCase):
             verify_claim(self.root, object(), claim)  # type: ignore[arg-type]
         with self.assertRaises(VerificationInputError):
             verify_claim(self.root, state, object())  # type: ignore[arg-type]
+
+
+class DocumentVerificationTests(VerificationTestCase):
+    def document(self) -> StateDocument:
+        verified = self.bound_evidence(
+            "evidence-verified", "src/verified.bin", b"verified"
+        )
+        failed = self.bound_evidence(
+            "evidence-failed",
+            "src/failed.bin",
+            b"actual",
+            expected=b"expected",
+        )
+        return replace(
+            self.state((verified, failed)),
+            invariants=(
+                Invariant(
+                    id="inv-1",
+                    description="Governing invariant",
+                    enforcement=InvariantEnforcement.BLOCK,
+                    status=InvariantStatus.ACTIVE,
+                ),
+            ),
+            decisions=(
+                Decision(
+                    id="dec-1",
+                    description="Accepted decision",
+                    intent=Intent.AUTHORIZED,
+                    execution=Execution.NOT_RUN,
+                    approved_at="2026-08-18T00:00:00+04:00",
+                    approval_channel="test",
+                ),
+            ),
+            tasks=(
+                Task(
+                    id="task-1",
+                    description="Active verification task",
+                    status=TaskStatus.ACTIVE,
+                    intent=Intent.AUTHORIZED,
+                    execution=Execution.NOT_RUN,
+                    approved_at="2026-08-18T00:00:00+04:00",
+                    approval_channel="test",
+                ),
+            ),
+            claims=(
+                self.claim(
+                    ("evidence-verified",),
+                    id="claim-verified",
+                ),
+                self.claim(
+                    ("evidence-failed",),
+                    id="claim-failed",
+                ),
+            ),
+        )
+
+    def test_every_verifiable_record_has_a_deterministic_result(self) -> None:
+        state = self.document()
+        first = verify_state(self.root, state)
+        second = verify_state(self.root, state)
+        self.assertEqual(first, second)
+        self.assertEqual(
+            tuple(first),
+            (
+                "evidence-verified",
+                "evidence-failed",
+                "claim-verified",
+                "claim-failed",
+            ),
+        )
+        self.assertEqual(
+            first["evidence-verified"].verification,
+            Verification.VERIFIED,
+        )
+        self.assertEqual(
+            first["claim-failed"].verification,
+            Verification.FAILED,
+        )
+        self.assertTrue(
+            {"inv-1", "dec-1", "task-1"}.isdisjoint(first)
+        )
+
+    def test_foreign_scope_semantics_fails_closed_before_source_reads(self) -> None:
+        foreign = (
+            paths.ScopePathSemantics.CASE_SENSITIVE
+            if paths.host_scope_semantics() is paths.ScopePathSemantics.CASE_FOLDED
+            else paths.ScopePathSemantics.CASE_FOLDED
+        )
+        state = replace(self.document(), scope_semantics=foreign)
+        with mock.patch(
+            "builtins.open", side_effect=AssertionError("source bytes read")
+        ):
+            results = verify_state(self.root, state)
+        self.assertTrue(results)
+        for result in results.values():
+            self.assert_result(
+                result,
+                Verification.UNVERIFIED,
+                VerificationReason.SCOPE_SEMANTICS_INCOMPATIBLE,
+            )
+
+    def test_document_verification_has_no_state_or_source_side_effects(self) -> None:
+        state = self.document()
+        state_path = self.root / ".evidline" / "state.json"
+        state_path.write_bytes(b'{"revision": 7}\n')
+        sources = {
+            path: path.read_bytes()
+            for path in (
+                self.root / "src" / "verified.bin",
+                self.root / "src" / "failed.bin",
+            )
+        }
+        state_before = copy.deepcopy(state)
+        state_bytes_before = state_path.read_bytes()
+
+        verify_state(self.root, state)
+
+        self.assertEqual(state, state_before)
+        self.assertEqual(state.revision, 7)
+        self.assertEqual(state_path.read_bytes(), state_bytes_before)
+        self.assertEqual(
+            {path: path.read_bytes() for path in sources},
+            sources,
+        )
+
+    def test_wrong_top_level_types_raise_input_error(self) -> None:
+        with self.assertRaises(VerificationInputError):
+            verify_state(self.root, object())  # type: ignore[arg-type]
+        with self.assertRaises(VerificationInputError):
+            verify_state(object(), self.document())  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

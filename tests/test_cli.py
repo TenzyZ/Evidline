@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import io
 import json
 import os
@@ -163,6 +164,30 @@ class CliTests(unittest.TestCase):
         )
         return replace(document, tasks=(draft,))
 
+    def write_verified_handoff_state(self) -> Path:
+        document = high_state()
+        source_path = "evidence/current.bin"
+        evidence = replace(
+            document.evidence[0],
+            source_path=source_path,
+            digest="sha256:" + hashlib.sha256(b"expected").hexdigest(),
+        )
+        task_record = replace(
+            document.tasks[0],
+            related_ids=("claim-1",),
+        )
+        state_path = self.write_state(
+            replace(
+                document,
+                tasks=(task_record,),
+                evidence=(evidence,),
+            )
+        )
+        source = self.root / source_path
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"changed")
+        return state_path
+
     def test_bare_cli_is_usage_error_with_help_on_stderr(self) -> None:
         code, stdout, stderr = self.run_cli()
         self.assertEqual(code, 2)
@@ -300,6 +325,81 @@ class CliTests(unittest.TestCase):
         code, stdout, stderr = self.run_cli("context", "--root", str(self.root))
         self.assertEqual(code, 0)
         self.assertIn("EVIDLINE CONTEXT", stdout)
+
+    def test_verified_handoff_context_formats_budget_root_and_degradation(self) -> None:
+        state_path = self.write_verified_handoff_state()
+        before = state_path.read_bytes()
+        for fmt in ("payload", "report", "json"):
+            with self.subTest(fmt=fmt):
+                code, stdout, stderr = self.run_cli(
+                    "context",
+                    "--profile",
+                    "verified-handoff",
+                    "--format",
+                    fmt,
+                    "--budget",
+                    "12000",
+                    "--root",
+                    str(self.root),
+                )
+                self.assertEqual((code, stderr), (0, ""))
+                if fmt == "payload":
+                    self.assertIn("current:FAILED", stdout)
+                elif fmt == "report":
+                    self.assertIn("current_verification=FAILED", stdout)
+                else:
+                    records = {
+                        item["record_id"]: item
+                        for item in json.loads(stdout)["records"]
+                    }
+                    self.assertEqual(
+                        records["claim-1"]["current_verification"],
+                        "FAILED",
+                    )
+        self.assertEqual(state_path.read_bytes(), before)
+
+    def test_verified_handoff_context_error_mapping(self) -> None:
+        empty = Path(self.temporary.name) / "empty-verified"
+        empty.mkdir()
+        code, stdout, stderr = self.run_cli(
+            "context",
+            "--profile",
+            "verified-handoff",
+            "--root",
+            str(empty),
+        )
+        self.assertEqual(code, 3)
+        self.assertEqual(stdout, "")
+        self.assertIn("state not initialized", stderr)
+
+        self.write_verified_handoff_state()
+        code, stdout, stderr = self.run_cli(
+            "context",
+            "--profile",
+            "verified-handoff",
+            "--budget",
+            "1",
+            "--root",
+            str(self.root),
+        )
+        self.assertEqual(code, 6)
+        self.assertEqual(stdout, "")
+        self.assertIn("invalid compiler input", stderr)
+
+        (self.root / ".evidline" / "state.json").write_text(
+            '{"schema_version": 1, "broken": true}',
+            encoding="utf-8",
+        )
+        code, stdout, stderr = self.run_cli(
+            "context",
+            "--profile",
+            "verified-handoff",
+            "--root",
+            str(self.root),
+        )
+        self.assertEqual(code, 4)
+        self.assertEqual(stdout, "")
+        self.assertIn("invalid or unsupported state", stderr)
 
     def test_status_text_is_exact_and_ordered_for_fresh_state(self) -> None:
         state_path = self.initialize()

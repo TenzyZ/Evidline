@@ -75,6 +75,22 @@ scope differs from explicit repository root.
 They do not prove live hook dispatch, live context injection, live mutation
 denial, installed harness integration, human acceptance, or VAB-6 closure.
 
+## Phase 11 verified-handoff coverage
+
+The twelve `handoff.*` scenarios exercise the explicit
+`context --profile verified-handoff` architecture through direct library and
+wrapper boundaries. They cover matching, changed, missing, unsafe, historical,
+and foreign-scope results; persisted-VERIFIED rejection; no state/source write;
+deterministic rendering; partial per-record degradation; exact budget
+accounting; and unchanged SESSION output. The current benchmark total is
+86 / 86 matched.
+
+This proves deterministic synthetic composition of current per-record Evidence
+and Claim verdicts into a handoff-style context. It does not certify the payload
+as a whole, byte-verify Tasks/Decisions/Invariants, semantically prove Claim
+prose, close VAB-4, install hooks, integrate adapters or mutation policy, or
+eliminate the accepted TOCTOU/hardlink residual.
+
 ## V1 blockers
 
 `VAB-1` — **trusted scoped adapter ALLOW implemented and reviewed** — is
@@ -103,8 +119,10 @@ overall `v1_acceptance` remains `BLOCKED`.
 `VAB-3` — **reproducible evidence verifier implemented; verdicts remain ephemeral
 and persisted VERIFIED stays prohibited** — is `CLOSED`.
 
-`VAB-4` — **verified handoff absent; handoff profile is explicitly unverified**
-— is `OPEN`.
+`VAB-4` — **verified handoff implemented pending review and accepted ledger
+closure** — is `OPEN`. Phase 11 provides the engineering capability and the
+86/86 synthetic benchmark contract, but does not perform independent acceptance
+review, accepted merge, or the later acceptance-ledger closure correction.
 
 `VAB-5` — **doctor / validation capability absent** — is `OPEN`.
 
