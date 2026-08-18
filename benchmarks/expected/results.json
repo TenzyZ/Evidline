@@ -153,8 +153,8 @@
       },
       {
         "id": "VAB-4",
-        "status": "OPEN",
-        "title": "verified handoff implemented pending review and accepted ledger closure"
+        "status": "CLOSED",
+        "title": "explicit verified-handoff profile implemented and reviewed; per-record Evidence and Claim verdicts are derived fresh, remain ephemeral, and whole-payload certification is not claimed"
       },
       {
         "id": "VAB-5",

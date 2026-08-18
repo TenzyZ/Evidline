@@ -106,13 +106,13 @@ Today Evidline refuses to persist `VERIFIED`, because the reproducible verifier 
 | Built | Claude Code adapter transport | [Claude Code adapter guide](docs/claude-code-adapter.md) |
 | Built | Codex adapter transport | [Codex adapter guide](docs/codex-adapter.md) |
 | Built | Cross-harness benchmark (synthetic) | [Benchmark](docs/benchmark.md) |
-| Not started | Verified handoff | [ADR-0005](docs/adr/ADR-0005-context-compiler.md) |
+| Built | Verified handoff (explicit `verified-handoff` context profile) | [ADR-0023](docs/adr/ADR-0023-verified-handoff.md) |
 | Not started | Doctor command | [AGENTS.md](AGENTS.md) |
 | Not started | Published package or release | [pyproject.toml](pyproject.toml) |
 
 The benchmark is synthetic: it measures the implemented core and the adapter transports, not live hook enforcement, and it currently records both V1 goals below as blocked.
 
-There is no complete product surface yet. Verified handoff, doctor command, Claude or Codex hook activation, live enforcement, and any published release are still future work.
+There is no complete product surface yet. Doctor command, Claude or Codex hook activation, live enforcement, and any published release are still future work.
 
 A local CLI flow is:
 
