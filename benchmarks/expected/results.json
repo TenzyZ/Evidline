@@ -29,8 +29,8 @@
       "over_budget": false,
       "policy_vs_failure_confusion_count": 0,
       "required_facts_restored": 11,
-      "scenarios_matched": 74,
-      "scenarios_total": 74,
+      "scenarios_matched": 86,
+      "scenarios_total": 86,
       "session_payload_identical": true,
       "stale_reuse_count": 0,
       "stale_revalidation_count": 2,
@@ -104,6 +104,18 @@
       "verify.claim_unverified_precedence",
       "verify.claim_volatile_freshness_does_not_gate",
       "verify.no_state_write",
+      "handoff.matching_binding_verified_now",
+      "handoff.changed_source_failed_now",
+      "handoff.missing_source_unverified",
+      "handoff.unsafe_source_unverified",
+      "handoff.persisted_provenance_is_not_current_truth",
+      "handoff.persisted_verified_claim_rejected",
+      "handoff.no_state_write",
+      "handoff.repeat_is_deterministic",
+      "handoff.partial_verification_contract",
+      "handoff.budget_accounting_exact",
+      "handoff.session_profile_unchanged",
+      "handoff.foreign_scope_semantics_fails_closed",
       "authoring.task_created_unapproved",
       "authoring.invariant_governed_scope_created",
       "authoring.empty_governed_scope_is_not_repository_global",
@@ -142,7 +154,7 @@
       {
         "id": "VAB-4",
         "status": "OPEN",
-        "title": "verified handoff absent; handoff profile is explicitly unverified"
+        "title": "verified handoff implemented pending review and accepted ledger closure"
       },
       {
         "id": "VAB-5",

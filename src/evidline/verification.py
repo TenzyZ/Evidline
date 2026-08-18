@@ -12,7 +12,8 @@ from enum import Enum
 import hashlib
 import os
 import stat
-from typing import Final
+from types import MappingProxyType
+from typing import Final, Mapping
 
 from evidline import paths
 from evidline import state as _state
@@ -230,3 +231,31 @@ def verify_claim(
         Verification.VERIFIED,
         VerificationReason.ALL_EVIDENCE_VERIFIED,
     )
+
+
+def verify_state(
+    project_root: str | os.PathLike[str],
+    state: StateDocument,
+) -> Mapping[str, VerificationResult]:
+    """Derive current verdicts for every verifiable record without writing."""
+
+    if type(state) is not StateDocument:
+        raise VerificationInputError("state must be a StateDocument")
+    _require_project_root(project_root)
+
+    results: dict[str, VerificationResult] = {}
+    if state.scope_semantics is not paths.host_scope_semantics():
+        incompatible = _unverified(
+            VerificationReason.SCOPE_SEMANTICS_INCOMPATIBLE
+        )
+        for evidence in state.evidence:
+            results[evidence.id] = incompatible
+        for claim in state.claims:
+            results[claim.id] = incompatible
+        return MappingProxyType(results)
+
+    for evidence in state.evidence:
+        results[evidence.id] = verify_evidence(project_root, evidence)
+    for claim in state.claims:
+        results[claim.id] = verify_claim(project_root, state, claim)
+    return MappingProxyType(results)

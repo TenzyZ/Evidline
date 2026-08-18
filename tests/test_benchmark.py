@@ -38,6 +38,9 @@ class BenchmarkTests(unittest.TestCase):
             self.assertNotEqual(first.sandbox, second.sandbox)
             self.assertTrue((first.root / ".evidline" / "state.json").is_file())
             self.assertTrue((first.root / "src" / "app.py").is_file())
+            self.assertTrue(
+                (first.handoff_root / ".evidline" / "state.json").is_file()
+            )
             with self.assertRaises(SandboxContainmentError):
                 first.assert_sandbox_path(Path.cwd())
             self.assertFalse(
@@ -99,6 +102,24 @@ class BenchmarkTests(unittest.TestCase):
         no_write = self.results["verify.no_state_write"]["actual"]
         self.assertTrue(no_write["state_bytes_unchanged"])
         self.assertTrue(no_write["revision_unchanged"])
+
+    def test_handoff_scenarios(self) -> None:
+        self.assert_category_matched("handoff")
+        partial = self.results[
+            "handoff.partial_verification_contract"
+        ]["actual"]
+        self.assertEqual(
+            partial["verdict_counts"],
+            {"VERIFIED": 4, "FAILED": 2, "UNVERIFIED": 4},
+        )
+        self.assertTrue(partial["failed_revalidate"])
+        self.assertTrue(partial["unverified_never_verified"])
+        self.assertTrue(partial["continuity_present"])
+        self.assertFalse(partial["global_success_claim"])
+        foreign = self.results[
+            "handoff.foreign_scope_semantics_fails_closed"
+        ]["actual"]
+        self.assertTrue(foreign["zero_source_reads"])
 
     def test_authoring_scenarios(self) -> None:
         self.assert_category_matched("authoring")
@@ -167,6 +188,7 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(blockers["VAB-1"]["status"], "CLOSED")
         self.assertEqual(blockers["VAB-2"]["status"], "CLOSED")
         self.assertEqual(blockers["VAB-3"]["status"], "CLOSED")
+        self.assertEqual(blockers["VAB-4"]["status"], "OPEN")
         self.assertEqual(blockers["VAB-6"]["status"], "CLOSED")
         self.assertGreater(
             len([item for item in blockers.values() if item["status"] != "CLOSED"]),

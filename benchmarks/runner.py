@@ -44,10 +44,13 @@ from evidline.mutation import (
 from evidline.state import (
     Intent,
     StateDocument,
+    StateValidationError,
     TaskStatus,
     TRUSTED_APPROVAL_CHANNEL,
     TRUSTED_ASSERTED_ACTOR,
+    Verification,
     load_state,
+    validate_state,
 )
 
 
@@ -1028,6 +1031,225 @@ def _scenario_verify(
     raise KeyError(scenario_id)
 
 
+def _verified_handoff(
+    fixture: BenchmarkFixture,
+    state: StateDocument | None = None,
+) -> tuple[context.CompiledContext, Mapping[str, verification.VerificationResult]]:
+    document = fixture.handoff_state if state is None else state
+    results = verification.verify_state(fixture.handoff_root, document)
+    compiled = context.compile_context(
+        document,
+        profile=ContextProfile.VERIFIED_HANDOFF,
+        verifications=results,
+    )
+    return compiled, results
+
+
+def _scenario_handoff(
+    fixture: BenchmarkFixture,
+    scenario_id: str,
+) -> dict[str, Any]:
+    compiled, results = _verified_handoff(fixture)
+    entries = _entry_map(compiled)
+    if scenario_id == "handoff.matching_binding_verified_now":
+        entry = entries["claim-handoff-matching"]
+        result = results[entry.record_id]
+        return {
+            "verification": result.verification.value,
+            "reason": result.reason.value,
+            "disposition": entry.disposition.value,
+            "verified_now": ReasonCode.VERIFIED_NOW in entry.reasons,
+            "digest_not_rechecked": (
+                ReasonCode.DIGEST_NOT_RECHECKED in entry.reasons
+            ),
+        }
+    if scenario_id == "handoff.changed_source_failed_now":
+        entry = entries["claim-handoff-changed"]
+        result = results[entry.record_id]
+        return {
+            "verification": result.verification.value,
+            "reason": result.reason.value,
+            "disposition": entry.disposition.value,
+            "failure_marked": (
+                ReasonCode.CURRENT_VERIFICATION_FAILED in entry.reasons
+            ),
+        }
+    if scenario_id == "handoff.missing_source_unverified":
+        entry = entries["claim-handoff-missing"]
+        result = results[entry.record_id]
+        return {
+            "verification": result.verification.value,
+            "reason": result.reason.value,
+            "disposition": entry.disposition.value,
+            "presented_as_verified": (
+                entry.current_verification is Verification.VERIFIED
+            ),
+        }
+    if scenario_id == "handoff.unsafe_source_unverified":
+        result = results["evidence-handoff-unsafe"]
+        return {
+            "verification": result.verification.value,
+            "reason": result.reason.value,
+        }
+    if scenario_id == "handoff.persisted_provenance_is_not_current_truth":
+        entry = entries["claim-handoff-historical-failed"]
+        result = results[entry.record_id]
+        return {
+            "current_verification": result.verification.value,
+            "current_reason": result.reason.value,
+            "disposition": entry.disposition.value,
+            "rendered_freshness": entry.rendered_freshness,
+            "historical_failure_preserved": (
+                ReasonCode.FAILED_VERIFICATION in entry.reasons
+            ),
+            "verified_now": ReasonCode.VERIFIED_NOW in entry.reasons,
+        }
+    if scenario_id == "handoff.persisted_verified_claim_rejected":
+        first = fixture.handoff_state.claims[0]
+        invalid = replace(
+            fixture.handoff_state,
+            claims=(
+                replace(first, verification=Verification.VERIFIED),
+                *fixture.handoff_state.claims[1:],
+            ),
+        )
+        try:
+            validate_state(invalid)
+        except StateValidationError as error:
+            return {
+                "exception": type(error).__name__,
+                "persisted_verified_rejected": "VERIFIED cannot be persisted" in str(error),
+            }
+        return {"exception": None, "persisted_verified_rejected": False}
+    if scenario_id == "handoff.no_state_write":
+        state_path = fixture.handoff_target(".evidline/state.json")
+        sources = (
+            fixture.handoff_target("handoff/matching.txt"),
+            fixture.handoff_target("handoff/changed.txt"),
+        )
+        before_state = state_path.read_bytes()
+        before_sources = tuple(path.read_bytes() for path in sources)
+        before_revision = load_state(fixture.handoff_root).revision
+        context.load_and_compile(
+            fixture.handoff_root,
+            profile=ContextProfile.VERIFIED_HANDOFF,
+        )
+        return {
+            "state_bytes_unchanged": state_path.read_bytes() == before_state,
+            "revision_unchanged": (
+                load_state(fixture.handoff_root).revision == before_revision
+            ),
+            "source_bytes_unchanged": (
+                tuple(path.read_bytes() for path in sources) == before_sources
+            ),
+        }
+    if scenario_id == "handoff.repeat_is_deterministic":
+        second, second_results = _verified_handoff(fixture)
+        return {
+            "verification_equal": results == second_results,
+            "payload_equal": (
+                context.render_payload(compiled) == context.render_payload(second)
+            ),
+            "report_equal": (
+                context.render_report(compiled) == context.render_report(second)
+            ),
+            "json_equal": (
+                context.render_json(compiled) == context.render_json(second)
+            ),
+        }
+    if scenario_id == "handoff.partial_verification_contract":
+        verifiable_ids = set(results)
+        current_entries = {
+            record_id: entries[record_id] for record_id in verifiable_ids
+        }
+        payload = context.render_payload(compiled)
+        continuity_ids = {
+            "inv-handoff",
+            "task-handoff-active",
+            "task-handoff-done",
+            "dec-handoff",
+        }
+        verdict_counts = {
+            verdict.value: sum(
+                result.verification is verdict for result in results.values()
+            )
+            for verdict in (
+                Verification.VERIFIED,
+                Verification.FAILED,
+                Verification.UNVERIFIED,
+            )
+        }
+        return {
+            "verdict_counts": verdict_counts,
+            "all_verifiable_explicit": all(
+                entry.current_verification is not None
+                and entry.current_verification_reason is not None
+                for entry in current_entries.values()
+            ),
+            "failed_revalidate": all(
+                current_entries[record_id].disposition is Disposition.REVALIDATE
+                for record_id, result in results.items()
+                if result.verification is Verification.FAILED
+            ),
+            "unverified_never_verified": all(
+                current_entries[record_id].current_verification
+                is Verification.UNVERIFIED
+                for record_id, result in results.items()
+                if result.verification is Verification.UNVERIFIED
+            ),
+            "verified_eligible_included": (
+                entries["claim-handoff-matching"].disposition
+                is Disposition.INCLUDED
+            ),
+            "continuity_present": continuity_ids.issubset(entries),
+            "global_success_claim": "all records verified" in payload.casefold(),
+        }
+    if scenario_id == "handoff.budget_accounting_exact":
+        return {
+            "accounting_exact": (
+                compiled.budget is not None
+                and compiled.budget.used_chars
+                == len(context.render_payload(compiled))
+            )
+        }
+    if scenario_id == "handoff.session_profile_unchanged":
+        before = context.render_payload(context.compile_context(fixture.state))
+        _verified_handoff(fixture)
+        after = context.render_payload(context.compile_context(fixture.state))
+        return {
+            "identical": before == after,
+            "verification_metadata_absent": " current:" not in after,
+        }
+    if scenario_id == "handoff.foreign_scope_semantics_fails_closed":
+        foreign = (
+            paths.ScopePathSemantics.CASE_SENSITIVE
+            if paths.host_scope_semantics()
+            is paths.ScopePathSemantics.CASE_FOLDED
+            else paths.ScopePathSemantics.CASE_FOLDED
+        )
+        state = replace(fixture.handoff_state, scope_semantics=foreign)
+        with mock.patch(
+            "builtins.open", side_effect=AssertionError("source bytes read")
+        ) as opened:
+            foreign_results = verification.verify_state(
+                fixture.handoff_root,
+                state,
+            )
+        return {
+            "all_unverified": all(
+                result.verification is Verification.UNVERIFIED
+                for result in foreign_results.values()
+            ),
+            "all_scope_incompatible": all(
+                result.reason
+                is verification.VerificationReason.SCOPE_SEMANTICS_INCOMPATIBLE
+                for result in foreign_results.values()
+            ),
+            "zero_source_reads": opened.call_count == 0,
+        }
+    raise KeyError(scenario_id)
+
+
 def _scenario_authoring(
     fixture: BenchmarkFixture,
     scenario_id: str,
@@ -1160,6 +1382,7 @@ def _execute_scenario(fixture: BenchmarkFixture, spec: ScenarioSpec) -> dict[str
         "codex": _scenario_codex,
         "adapters": _scenario_adapters,
         "verify": _scenario_verify,
+        "handoff": _scenario_handoff,
         "authoring": _scenario_authoring,
         "cross": _scenario_cross,
     }
