@@ -125,7 +125,18 @@ current per-record Evidence/Claim verification is fresh and ephemeral; full
 suite passed; benchmark 86/86 matched; independent review approved; and the
 accepted Phase 11 merge completed.
 
-`VAB-5` — **doctor / validation capability absent** — is `OPEN`.
+`VAB-5` — **doctor / validation capability acceptance remains pending** — is `OPEN`.
+
+## Phase 12 Doctor coverage
+
+Doctor scenarios prove deterministic local diagnostic behavior, the nine-check
+result contract, expected broken-state decomposition, read-only/no-write
+behavior, deterministic rendering, and that optional absence is not corruption.
+They do not perform Evidence verification or any VAB-7 live harness behavior;
+installed dispatch, injection, and denial remain unattempted. VAB-5 remains
+`OPEN` and overall `v1_acceptance` remains `BLOCKED` pending the separate
+acceptance-ledger closure. The current frozen synthetic benchmark matches
+`95/95` scenarios.
 
 `VAB-6` — **supported Task and Invariant authoring surface implemented and reviewed; authoring remains distinct from trusted authorization** — is `CLOSED`.
 Closure is based on supported Task and Invariant authoring, governed_scope

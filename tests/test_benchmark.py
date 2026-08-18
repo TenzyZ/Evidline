@@ -133,6 +133,12 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(empty_scope["dot_scope_meaning"], "WHOLE_REPOSITORY")
         self.assertFalse(empty_scope["equal"])
 
+    def test_doctor_scenarios(self) -> None:
+        self.assert_category_matched("doctor")
+        self.assertEqual(self.results["doctor.not_initialized"]["actual"]["exit"], 20)
+        self.assertEqual(self.results["doctor.budget_below_profile_minimum"]["actual"]["overall"], "DEGRADED")
+        self.assertTrue(self.results["doctor.no_state_write"]["actual"]["bytes_unchanged"])
+
     def test_vab1_scoped_adapter_proofs(self) -> None:
         for scenario_id in (
             "claude.authorized_normal_mutation",
