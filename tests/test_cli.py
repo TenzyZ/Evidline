@@ -1324,6 +1324,44 @@ class CliTests(unittest.TestCase):
         self.assertEqual(first[0], second[0])
         self.assertEqual(first[1], second[1])
 
+    def test_doctor_text_and_json_are_successful_for_healthy_state(self) -> None:
+        self.initialize()
+        code, stdout, stderr = self.run_cli("doctor", "--root", str(self.root))
+        self.assertEqual(code, 0)
+        self.assertIn("Evidline doctor", stdout)
+        self.assertIn("D001 runtime.python_supported", stdout)
+        self.assertIn("D009 state.context_budget_sufficient", stdout)
+        self.assertEqual(stderr, "")
+        code, stdout, stderr = self.run_cli("doctor", "--root", str(self.root), "--format", "json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout)["overall_status"], "HEALTHY")
+        self.assertEqual(len(json.loads(stdout)["checks"]), 9)
+        self.assertEqual(stderr, "")
+
+    def test_doctor_reports_broken_projects_with_exit_twenty(self) -> None:
+        code, stdout, stderr = self.run_cli("doctor", "--root", str(self.root))
+        self.assertEqual(code, 20)
+        self.assertIn("PROJECT_ROOT_NOT_FOUND", stdout)
+        self.assertEqual(stderr, "")
+        state_path = self.initialize()
+        state_path.write_text("{bad\n", encoding="utf-8")
+        code, stdout, stderr = self.run_cli("doctor", "--root", str(self.root))
+        self.assertEqual(code, 20)
+        self.assertIn("STATE_JSON_INVALID", stdout)
+        self.assertEqual(stderr, "")
+
+    def test_doctor_bad_format_remains_argparse_usage_error(self) -> None:
+        code, _, _ = self.run_cli("doctor", "--format", "xml")
+        self.assertEqual(code, 2)
+
+    def test_doctor_unexpected_failure_exits_seven_without_report(self) -> None:
+        with mock.patch("evidline.cli.doctor.run_diagnostics", side_effect=RuntimeError("boom")):
+            code, stdout, stderr = self.run_cli("doctor", "--root", str(self.root))
+        self.assertEqual(code, 7)
+        self.assertEqual(stdout, "")
+        self.assertIn("evidline: doctor internal failure: boom", stderr)
+        self.assertNotIn("Evidline doctor", stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

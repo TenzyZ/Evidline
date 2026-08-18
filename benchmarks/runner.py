@@ -25,7 +25,7 @@ from benchmarks.scenarios import (
     V1_ACCEPTANCE_BLOCKERS,
     ScenarioSpec,
 )
-from evidline import cli, context, mutation, paths, verification
+from evidline import cli, context, doctor, mutation, paths, verification
 from evidline.adapters import claude, codex
 from evidline.context import (
     ContextInputError,
@@ -1374,6 +1374,63 @@ def _scenario_authoring(
     raise KeyError(scenario_id)
 
 
+def _scenario_doctor(fixture: BenchmarkFixture, scenario_id: str) -> dict[str, Any]:
+    state_path = fixture.target(".evidline/state.json")
+    before = state_path.read_bytes()
+    contents_before = sorted(item.name for item in state_path.parent.iterdir())
+    try:
+        if scenario_id == "doctor.healthy_project":
+            report = doctor.run_diagnostics(fixture.root)
+            code, _, _ = _invoke_argv(cli, ("doctor", "--root", str(fixture.root)))
+            return {"overall": report.overall_status.value, "all_pass": all(item.status is doctor.CheckStatus.PASS for item in report.checks), "exit": code}
+        if scenario_id == "doctor.not_initialized":
+            report = doctor.run_diagnostics(fixture.no_root)
+            code, _, _ = _invoke_argv(cli, ("doctor", "--root", str(fixture.no_root)))
+            return {"overall": report.overall_status.value, "reason": report.checks[1].reason.value, "skips": sum(item.status is doctor.CheckStatus.SKIP for item in report.checks[2:]), "exit": code}
+        if scenario_id == "doctor.malformed_state_json":
+            fixture.write_invalid_state()
+            report = doctor.run_diagnostics(fixture.root)
+            code, _, _ = _invoke_argv(cli, ("doctor", "--root", str(fixture.root)))
+            return {"reason": report.checks[4].reason.value, "exit": code}
+        if scenario_id == "doctor.unsupported_schema":
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+            raw["schema_version"] = 999
+            state_path.write_text(json.dumps(raw), encoding="utf-8")
+            report = doctor.run_diagnostics(fixture.root)
+            code, _, _ = _invoke_argv(cli, ("doctor", "--root", str(fixture.root)))
+            return {"reason": report.checks[5].reason.value, "exit": code}
+        if scenario_id == "doctor.incompatible_scope_semantics":
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+            raw["scope_semantics"] = "CASE_SENSITIVE" if paths.host_scope_semantics().value == "CASE_FOLDED" else "CASE_FOLDED"
+            raw["tasks"][0]["authorized_scope"] = ["src"]
+            state_path.write_text(json.dumps(raw), encoding="utf-8")
+            report = doctor.run_diagnostics(fixture.root)
+            code, _, _ = _invoke_argv(cli, ("doctor", "--root", str(fixture.root)))
+            return {"reason": report.checks[6].reason.value, "exit": code}
+        if scenario_id == "doctor.healthy_without_active_task":
+            fixture.write_state(fixture.state_without_active_task())
+            report = doctor.run_diagnostics(fixture.root)
+            code, _, _ = _invoke_argv(cli, ("doctor", "--root", str(fixture.root)))
+            return {"overall": report.overall_status.value, "exit": code}
+        if scenario_id == "doctor.budget_below_profile_minimum":
+            minimum = min(context.minimum_budget_chars(profile) for profile in ContextProfile)
+            fixture.write_state(replace(fixture.state, project=replace(fixture.state.project, default_budget_chars=minimum)))
+            report = doctor.run_diagnostics(fixture.root)
+            code, _, _ = _invoke_argv(cli, ("doctor", "--root", str(fixture.root)))
+            return {"overall": report.overall_status.value, "reason": report.checks[8].reason.value, "exit": code}
+        if scenario_id == "doctor.no_state_write":
+            revision = load_state(fixture.root).revision
+            doctor.run_diagnostics(fixture.root)
+            return {"bytes_unchanged": state_path.read_bytes() == before, "revision_unchanged": load_state(fixture.root).revision == revision, "contents_unchanged": sorted(item.name for item in state_path.parent.iterdir()) == contents_before}
+        if scenario_id == "doctor.deterministic_output":
+            first = doctor.run_diagnostics(fixture.root)
+            second = doctor.run_diagnostics(fixture.root)
+            return {"text_identical": doctor.render_doctor_text(first) == doctor.render_doctor_text(second), "json_identical": doctor.render_doctor_json(first) == doctor.render_doctor_json(second)}
+        raise KeyError(scenario_id)
+    finally:
+        fixture.write_state()
+
+
 def _execute_scenario(fixture: BenchmarkFixture, spec: ScenarioSpec) -> dict[str, Any]:
     dispatch: dict[str, Callable[[BenchmarkFixture, str], dict[str, Any]]] = {
         "core": _scenario_core,
@@ -1384,6 +1441,7 @@ def _execute_scenario(fixture: BenchmarkFixture, spec: ScenarioSpec) -> dict[str
         "verify": _scenario_verify,
         "handoff": _scenario_handoff,
         "authoring": _scenario_authoring,
+        "doctor": _scenario_doctor,
         "cross": _scenario_cross,
     }
     return dispatch[spec.category](fixture, spec.id)

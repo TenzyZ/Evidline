@@ -11,6 +11,7 @@ from pathlib import Path
 import sys
 
 from evidline import __version__
+from evidline import doctor
 from evidline import mutation
 from evidline import paths
 from evidline import state
@@ -37,9 +38,11 @@ _EXIT_INVALID_INPUT = 6
 _EXIT_INTERNAL_FAILURE = 7
 _EXIT_POLICY_ASK = 10
 _EXIT_POLICY_BLOCK = 11
+_EXIT_DOCTOR_UNHEALTHY = 20
 
 _CONTEXT_FORMATS = ("payload", "report", "json")
 _STATUS_FORMATS = ("text", "json")
+_DOCTOR_FORMATS = ("text", "json")
 _DEFAULT_PURPOSE = "Purpose not yet stated."
 _DEFAULT_BUDGET = 8000
 _INSPECTION_NOTICE = (
@@ -87,6 +90,10 @@ def _build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument(
         "--format", choices=_STATUS_FORMATS, default="text"
     )
+
+    doctor_parser = subparsers.add_parser("doctor", help="diagnose local project health")
+    doctor_parser.add_argument("--root", metavar="PATH")
+    doctor_parser.add_argument("--format", choices=_DOCTOR_FORMATS, default="text")
 
     approve_parser = subparsers.add_parser(
         "approve", help="interactively authorize one task for bounded paths"
@@ -261,6 +268,17 @@ def _run_status(args: argparse.Namespace) -> int:
     )
     sys.stdout.write(renderer(report))
     return 0
+
+
+def _run_doctor(args: argparse.Namespace) -> int:
+    try:
+        report = doctor.run_diagnostics(args.root or os.curdir)
+        renderer = doctor.render_doctor_json if args.format == "json" else doctor.render_doctor_text
+        sys.stdout.write(renderer(report))
+        return _EXIT_DOCTOR_UNHEALTHY if report.overall_status is doctor.OverallStatus.UNHEALTHY else 0
+    except Exception as exc:
+        print(f"evidline: doctor internal failure: {exc}", file=sys.stderr)
+        return _EXIT_INTERNAL_FAILURE
 
 
 def _discover_root_or_error(root_argument: str | None) -> Path | None:
@@ -755,6 +773,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_init(args)
     if args.command == "status":
         return _run_status(args)
+    if args.command == "doctor":
+        return _run_doctor(args)
     if args.command == "approve":
         return _run_approve(args)
     if args.command == "add-task":

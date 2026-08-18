@@ -107,12 +107,12 @@ Today Evidline refuses to persist `VERIFIED`, because the reproducible verifier 
 | Built | Codex adapter transport | [Codex adapter guide](docs/codex-adapter.md) |
 | Built | Cross-harness benchmark (synthetic) | [Benchmark](docs/benchmark.md) |
 | Built | Verified handoff (explicit `verified-handoff` context profile) | [ADR-0023](docs/adr/ADR-0023-verified-handoff.md) |
-| Not started | Doctor command | [AGENTS.md](AGENTS.md) |
+| Built | Doctor command | [ADR-0025](docs/adr/ADR-0025-doctor-diagnostic-validation.md) |
 | Not started | Published package or release | [pyproject.toml](pyproject.toml) |
 
 The benchmark is synthetic: it measures the implemented core and the adapter transports, not live hook enforcement, and it currently records both V1 goals below as blocked.
 
-There is no complete product surface yet. Doctor command, Claude or Codex hook activation, live enforcement, and any published release are still future work.
+There is no complete product surface yet. Claude or Codex hook activation, live enforcement, and any published release are still future work.
 
 A local CLI flow is:
 
@@ -122,6 +122,7 @@ evidline init
 → evidline add-task --id task-work --description "Bounded implementation work"
 → evidline approve task-work --scope src --acknowledge inv-arch
 → evidline status
+→ evidline doctor
 → evidline context
 → evidline check-mutation --target src/app.py --risk LOW --intent REQUESTED
 ```
