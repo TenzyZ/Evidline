@@ -167,8 +167,8 @@
       },
       {
         "id": "VAB-5",
-        "status": "OPEN",
-        "title": "doctor / validation capability absent"
+        "status": "CLOSED",
+        "title": "read-only doctor diagnostics implemented and reviewed; deterministic local project and state health reporting performs no repair and establishes no live harness evidence"
       },
       {
         "id": "VAB-6",

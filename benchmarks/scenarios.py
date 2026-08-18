@@ -158,8 +158,8 @@ V1_ACCEPTANCE_BLOCKERS: Final = (
     },
     {
         "id": "VAB-5",
-        "title": "doctor / validation capability absent",
-        "status": "OPEN",
+        "title": "read-only doctor diagnostics implemented and reviewed; deterministic local project and state health reporting performs no repair and establishes no live harness evidence",
+        "status": "CLOSED",
     },
     {
         "id": "VAB-6",

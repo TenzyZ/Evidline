@@ -112,7 +112,7 @@ policy evaluation. The benchmark also proves that acknowledgement does not
 suppress caller-asserted invariant conflicts and that both existing adapters
 transport the core BLOCK as denial.
 
-VAB-1, VAB-2, VAB-3, VAB-4, and VAB-6 closure does not invalidate the remaining V1 limitations below.
+VAB-1, VAB-2, VAB-3, VAB-4, VAB-5, and VAB-6 closure does not invalidate the remaining V1 limitations below.
 Because they are closed while other acceptance requirements remain unsatisfied,
 overall `v1_acceptance` remains `BLOCKED`.
 
@@ -125,7 +125,11 @@ current per-record Evidence/Claim verification is fresh and ephemeral; full
 suite passed; benchmark 86/86 matched; independent review approved; and the
 accepted Phase 11 merge completed.
 
-`VAB-5` — **doctor / validation capability acceptance remains pending** — is `OPEN`.
+`VAB-5` — **read-only doctor diagnostics implemented and reviewed; deterministic local project and state health reporting performs no repair and establishes no live harness evidence** — is `CLOSED`.
+Closure is based on supported `evidline doctor`; deterministic D001–D009 diagnostics;
+read-only/no-repair contract; focused 82 tests passed; full suite 488 passed / 5 skipped;
+benchmark 95/95 matched; independent review approved with 0 CRITICAL / 0 MATERIAL;
+and the accepted Phase 12 merge completed.
 
 ## Phase 12 Doctor coverage
 
@@ -133,9 +137,8 @@ Doctor scenarios prove deterministic local diagnostic behavior, the nine-check
 result contract, expected broken-state decomposition, read-only/no-write
 behavior, deterministic rendering, and that optional absence is not corruption.
 They do not perform Evidence verification or any VAB-7 live harness behavior;
-installed dispatch, injection, and denial remain unattempted. VAB-5 remains
-`OPEN` and overall `v1_acceptance` remains `BLOCKED` pending the separate
-acceptance-ledger closure. The current frozen synthetic benchmark matches
+installed dispatch, injection, and denial remain unattempted. overall `v1_acceptance` remains `BLOCKED`. This VAB-5 acceptance-ledger
+closure completes the previously deferred ledger correction. The current frozen synthetic benchmark matches
 `95/95` scenarios.
 
 `VAB-6` — **supported Task and Invariant authoring surface implemented and reviewed; authoring remains distinct from trusted authorization** — is `CLOSED`.
