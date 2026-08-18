@@ -88,7 +88,7 @@ accounting; and unchanged SESSION output. The current benchmark total is
 This proves deterministic synthetic composition of current per-record Evidence
 and Claim verdicts into a handoff-style context. It does not certify the payload
 as a whole, byte-verify Tasks/Decisions/Invariants, semantically prove Claim
-prose, close VAB-4, install hooks, integrate adapters or mutation policy, or
+prose, by itself satisfy any acceptance-ledger requirement, install hooks, integrate adapters or mutation policy, or
 eliminate the accepted TOCTOU/hardlink residual.
 
 ## V1 blockers
@@ -112,17 +112,18 @@ policy evaluation. The benchmark also proves that acknowledgement does not
 suppress caller-asserted invariant conflicts and that both existing adapters
 transport the core BLOCK as denial.
 
-VAB-1, VAB-2, VAB-3, and VAB-6 closure does not invalidate the remaining V1 limitations below.
+VAB-1, VAB-2, VAB-3, VAB-4, and VAB-6 closure does not invalidate the remaining V1 limitations below.
 Because they are closed while other acceptance requirements remain unsatisfied,
 overall `v1_acceptance` remains `BLOCKED`.
 
 `VAB-3` — **reproducible evidence verifier implemented; verdicts remain ephemeral
 and persisted VERIFIED stays prohibited** — is `CLOSED`.
 
-`VAB-4` — **verified handoff implemented pending review and accepted ledger
-closure** — is `OPEN`. Phase 11 provides the engineering capability and the
-86/86 synthetic benchmark contract, but does not perform independent acceptance
-review, accepted merge, or the later acceptance-ledger closure correction.
+`VAB-4` — **explicit verified-handoff profile implemented and reviewed; per-record Evidence and Claim verdicts are derived fresh, remain ephemeral, and whole-payload certification is not claimed** — is `CLOSED`.
+Closure is based on the explicit `verified-handoff` profile implementation;
+current per-record Evidence/Claim verification is fresh and ephemeral; full
+suite passed; benchmark 86/86 matched; independent review approved; and the
+accepted Phase 11 merge completed.
 
 `VAB-5` — **doctor / validation capability absent** — is `OPEN`.
 

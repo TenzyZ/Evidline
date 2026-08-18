@@ -144,8 +144,8 @@ V1_ACCEPTANCE_BLOCKERS: Final = (
     },
     {
         "id": "VAB-4",
-        "title": "verified handoff implemented pending review and accepted ledger closure",
-        "status": "OPEN",
+        "title": "explicit verified-handoff profile implemented and reviewed; per-record Evidence and Claim verdicts are derived fresh, remain ephemeral, and whole-payload certification is not claimed",
+        "status": "CLOSED",
     },
     {
         "id": "VAB-5",
