@@ -8,7 +8,7 @@ import os
 import sys
 from typing import Any, Final
 
-from evidline import context, mutation, paths, state
+from evidline import context, mutation, paths, state, transport
 from evidline.context import ContextProfile
 from evidline.mutation import MutationOutcome, MutationRequest, MutationRisk
 from evidline.state import Intent
@@ -16,6 +16,9 @@ from evidline.state import Intent
 
 _EXIT_SUCCESS: Final = 0
 _EXIT_FAILURE: Final = 2
+_TRANSPORT_FAILURE_REASON: Final = (
+    "evidline adapter transport failure: canonical denial output unavailable."
+)
 
 _BEGIN_PATCH: Final = "*** Begin Patch"
 _END_PATCH: Final = "*** End Patch"
@@ -315,39 +318,67 @@ def _adapter_failure(reason: str) -> int:
 def _emit_denial(reason: str) -> int:
     if not reason.strip():
         return _adapter_failure("denial reason was empty")
-    return _write_json(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
+    document = _denial_document(reason)
+    try:
+        transport.write_stdout(_render_json(document), flush=True)
+        return _EXIT_SUCCESS
+    except transport.OutputWriteError as exc:
+        if not exc.fallback_safe:
+            _diagnose("evidline codex adapter: structured stdout write failed")
+            return _EXIT_FAILURE
+    except UnicodeEncodeError:
+        pass
+    except Exception:
+        _diagnose("evidline codex adapter: structured stdout write failed")
+        return _EXIT_FAILURE
+
+    try:
+        transport.write_stdout(
+            json.dumps(
+                _denial_document(_TRANSPORT_FAILURE_REASON),
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return _EXIT_SUCCESS
+    except Exception:
+        _diagnose("evidline codex adapter: structured stdout write failed")
+        return _EXIT_FAILURE
+
+
+def _denial_document(reason: str) -> dict[str, object]:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
         }
-    )
+    }
 
 
 def _write_json(document: Mapping[str, Any]) -> int:
-    rendered = json.dumps(
-        document,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+    rendered = _render_json(document)
     try:
-        written = sys.stdout.write(rendered)
-        if written is not None and written != len(rendered):
-            raise OSError("incomplete stdout write")
+        transport.write_stdout(rendered, flush=True)
     except Exception:
         _diagnose("evidline codex adapter: structured stdout write failed")
         return _EXIT_FAILURE
     return _EXIT_SUCCESS
 
 
+def _render_json(document: Mapping[str, Any]) -> str:
+    return json.dumps(
+        document,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 def _diagnose(message: str) -> None:
-    try:
-        sys.stderr.write(message + "\n")
-    except Exception:
-        pass
+    transport.diagnose(message)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 import sys
+from typing import TextIO
 
 from evidline import __version__
 from evidline import doctor
@@ -16,6 +17,7 @@ from evidline import mutation
 from evidline import paths
 from evidline import state
 from evidline import status
+from evidline import transport
 from evidline.context import (
     PAYLOAD_CHROME_CHARS,
     ContextInputError,
@@ -51,6 +53,38 @@ _INSPECTION_NOTICE = (
 )
 
 
+def _print_stdout(text: str, *, end: str = "\n", flush: bool = False) -> None:
+    transport.write_stdout(text + end, flush=flush)
+
+
+def _print_stderr(
+    text: object,
+    *,
+    file: TextIO | None = None,
+    end: str = "\n",
+    flush: bool = False,
+) -> None:
+    if file is not None and file is not sys.stderr:
+        raise ValueError("CLI diagnostics may only be written to stderr")
+    try:
+        transport.write_stderr(str(text) + end, flush=flush)
+    except Exception:
+        pass
+
+
+class _Utf8ArgumentParser(argparse.ArgumentParser):
+    def _print_message(self, message: str, file=None) -> None:
+        if not message:
+            return
+        if file is None or file is sys.stderr:
+            _print_stderr(message, end="", flush=True)
+            return
+        if file is sys.stdout:
+            transport.write_stdout(message, flush=True)
+            return
+        super()._print_message(message, file)
+
+
 def _positive_integer(text: str) -> int:
     try:
         value = int(text)
@@ -70,7 +104,7 @@ def _initialization_budget(text: str) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="evidline")
+    parser = _Utf8ArgumentParser(prog="evidline")
     parser.add_argument("--version", action="version", version=__version__)
     subparsers = parser.add_subparsers(dest="command")
 
@@ -200,15 +234,15 @@ def _run_init(args: argparse.Namespace) -> int:
     try:
         root = state.resolve_initialization_root(args.root)
     except state.StateValidationError as exc:
-        print(f"evidline: invalid initialization input: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: invalid initialization input: {exc}", file=sys.stderr)
         return _EXIT_INVALID_INPUT
     except state.StateIOError as exc:
-        print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state I/O failure: {exc}", file=sys.stderr)
         return _EXIT_STATE_IO
 
     name = args.name if args.name is not None else root.name
     if not name:
-        print("evidline: invalid initialization input: project name is empty", file=sys.stderr)
+        _print_stderr("evidline: invalid initialization input: project name is empty", file=sys.stderr)
         return _EXIT_INVALID_INPUT
     project = state.Project(
         name=name,
@@ -223,29 +257,29 @@ def _run_init(args: argparse.Namespace) -> int:
             state.load_state(root)
             state_path = state.get_state_path(root)
         except state.StateNotInitializedError as exc:
-            print(f"evidline: state not initialized: {exc}", file=sys.stderr)
+            _print_stderr(f"evidline: state not initialized: {exc}", file=sys.stderr)
             return _EXIT_NOT_INITIALIZED
         except state.StateValidationError as exc:
-            print(f"evidline: invalid or unsupported state: {exc}", file=sys.stderr)
+            _print_stderr(f"evidline: invalid or unsupported state: {exc}", file=sys.stderr)
             return _EXIT_INVALID_STATE
         except state.StateIOError as exc:
-            print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+            _print_stderr(f"evidline: state I/O failure: {exc}", file=sys.stderr)
             return _EXIT_STATE_IO
-        print(f"already initialized: {state_path} (unchanged)")
+        _print_stdout(f"already initialized: {state_path} (unchanged)")
         return 0
     except state.StateValidationError as exc:
-        print(f"evidline: invalid initialization input: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: invalid initialization input: {exc}", file=sys.stderr)
         return _EXIT_INVALID_INPUT
     except state.StateIOError as exc:
-        print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state I/O failure: {exc}", file=sys.stderr)
         return _EXIT_STATE_IO
 
     try:
         state_path = state.get_state_path(root)
     except state.StateIOError as exc:
-        print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state I/O failure: {exc}", file=sys.stderr)
         return _EXIT_STATE_IO
-    print(f"initialized: {state_path}")
+    _print_stdout(f"initialized: {state_path}")
     return 0
 
 
@@ -253,20 +287,20 @@ def _run_status(args: argparse.Namespace) -> int:
     try:
         report = status.load_status(args.root or os.curdir)
     except state.StateNotInitializedError as exc:
-        print(f"evidline: state not initialized: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state not initialized: {exc}", file=sys.stderr)
         return _EXIT_NOT_INITIALIZED
     except state.StateValidationError as exc:
-        print(f"evidline: invalid or unsupported state: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: invalid or unsupported state: {exc}", file=sys.stderr)
         return _EXIT_INVALID_STATE
     except state.StateIOError as exc:
-        print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state I/O failure: {exc}", file=sys.stderr)
         return _EXIT_STATE_IO
     renderer = (
         status.render_status_json
         if args.format == "json"
         else status.render_status_text
     )
-    sys.stdout.write(renderer(report))
+    transport.write_stdout(renderer(report), flush=True)
     return 0
 
 
@@ -274,17 +308,17 @@ def _run_doctor(args: argparse.Namespace) -> int:
     try:
         report = doctor.run_diagnostics(args.root or os.curdir)
         renderer = doctor.render_doctor_json if args.format == "json" else doctor.render_doctor_text
-        sys.stdout.write(renderer(report))
+        transport.write_stdout(renderer(report), flush=True)
         return _EXIT_DOCTOR_UNHEALTHY if report.overall_status is doctor.OverallStatus.UNHEALTHY else 0
     except Exception as exc:
-        print(f"evidline: doctor internal failure: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: doctor internal failure: {exc}", file=sys.stderr)
         return _EXIT_INTERNAL_FAILURE
 
 
 def _discover_root_or_error(root_argument: str | None) -> Path | None:
     root = paths.discover_project_root(root_argument or os.curdir)
     if root is None:
-        print("evidline: state not initialized: project root not found", file=sys.stderr)
+        _print_stderr("evidline: state not initialized: project root not found", file=sys.stderr)
     return root
 
 
@@ -294,13 +328,13 @@ def _load_current_state_or_error(
     try:
         return state.load_state(root), 0
     except state.StateNotInitializedError as exc:
-        print(f"evidline: state not initialized: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state not initialized: {exc}", file=sys.stderr)
         return None, _EXIT_NOT_INITIALIZED
     except state.StateValidationError as exc:
-        print(f"evidline: invalid or unsupported state: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: invalid or unsupported state: {exc}", file=sys.stderr)
         return None, _EXIT_INVALID_STATE
     except state.StateIOError as exc:
-        print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state I/O failure: {exc}", file=sys.stderr)
         return None, _EXIT_STATE_IO
 
 
@@ -312,37 +346,37 @@ def _commit_proposed_state(
     try:
         state.validate_state(proposed)
     except state.StateValidationError as exc:
-        print(f"evidline: invalid proposed state: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: invalid proposed state: {exc}", file=sys.stderr)
         return None, _EXIT_INVALID_INPUT
     try:
         return state.write_state(root, proposed, expected_revision=current.revision), 0
     except state.StateConflictError as exc:
-        print(f"evidline: state write conflict: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state write conflict: {exc}", file=sys.stderr)
         return None, _EXIT_STATE_IO
     except state.StateValidationError as exc:
-        print(f"evidline: invalid proposed state: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: invalid proposed state: {exc}", file=sys.stderr)
         return None, _EXIT_INVALID_INPUT
     except state.StateIOError as exc:
-        print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state I/O failure: {exc}", file=sys.stderr)
         return None, _EXIT_STATE_IO
 
 
 def _print_scope_lines(label: str, values: tuple[str, ...]) -> None:
-    print(f"{label}:")
+    _print_stdout(f"{label}:")
     if not values:
-        print("- (none)")
+        _print_stdout("- (none)")
         return
     for value in values:
-        print(f"- {value}")
+        _print_stdout(f"- {value}")
 
 
 def _run_add_task(args: argparse.Namespace) -> int:
     related_ids = tuple(args.related_id or ())
     if any(not record_id for record_id in related_ids):
-        print("evidline: invalid related id: id must be non-empty", file=sys.stderr)
+        _print_stderr("evidline: invalid related id: id must be non-empty", file=sys.stderr)
         return _EXIT_INVALID_INPUT
     if len(set(related_ids)) != len(related_ids):
-        print("evidline: invalid related id: duplicate record id", file=sys.stderr)
+        _print_stderr("evidline: invalid related id: duplicate record id", file=sys.stderr)
         return _EXIT_INVALID_INPUT
 
     root = _discover_root_or_error(args.root)
@@ -363,7 +397,7 @@ def _run_add_task(args: argparse.Namespace) -> int:
         for item in records
     }
     if args.id in all_record_ids:
-        print(f"evidline: duplicate record id: {args.id}", file=sys.stderr)
+        _print_stderr(f"evidline: duplicate record id: {args.id}", file=sys.stderr)
         return _EXIT_INVALID_INPUT
 
     record = state.Task(
@@ -382,18 +416,18 @@ def _run_add_task(args: argparse.Namespace) -> int:
     if updated is None:
         return error_code
 
-    print(f"created: {record.id}")
-    print(f"state_revision: {updated.revision}")
-    print(f"status: {record.status.value}")
-    print(f"intent: {record.intent.value}")
-    print(f"execution: {record.execution.value}")
+    _print_stdout(f"created: {record.id}")
+    _print_stdout(f"state_revision: {updated.revision}")
+    _print_stdout(f"status: {record.status.value}")
+    _print_stdout(f"intent: {record.intent.value}")
+    _print_stdout(f"execution: {record.execution.value}")
     _print_scope_lines("related_ids", record.related_ids)
     _print_scope_lines("authorized_scope", record.authorized_scope)
     _print_scope_lines(
         "acknowledged_invariant_ids", record.acknowledged_invariant_ids
     )
-    print("approval: (none)")
-    print(f"next: evidline approve {record.id} --scope ROOT_RELATIVE_PATH")
+    _print_stdout("approval: (none)")
+    _print_stdout(f"next: evidline approve {record.id} --scope ROOT_RELATIVE_PATH")
     return 0
 
 
@@ -404,10 +438,10 @@ def _run_add_invariant(args: argparse.Namespace) -> int:
             for value in (args.governed_scope or ())
         )
     except ValueError as exc:
-        print(f"evidline: invalid governed scope: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: invalid governed scope: {exc}", file=sys.stderr)
         return _EXIT_INVALID_INPUT
     if len(set(governed_scope)) != len(governed_scope):
-        print(
+        _print_stderr(
             "evidline: invalid governed scope: duplicate normalized scope",
             file=sys.stderr,
         )
@@ -423,7 +457,7 @@ def _run_add_invariant(args: argparse.Namespace) -> int:
         governed_scope
         and current.scope_semantics is not paths.host_scope_semantics()
     ):
-        print(
+        _print_stderr(
             "evidline: invalid governed scope: cannot author native scope under "
             "foreign scope_semantics; use the interactive approve ceremony to restamp",
             file=sys.stderr,
@@ -441,7 +475,7 @@ def _run_add_invariant(args: argparse.Namespace) -> int:
         for item in records
     }
     if args.id in all_record_ids:
-        print(f"evidline: duplicate record id: {args.id}", file=sys.stderr)
+        _print_stderr(f"evidline: duplicate record id: {args.id}", file=sys.stderr)
         return _EXIT_INVALID_INPUT
 
     record = state.Invariant(
@@ -466,13 +500,13 @@ def _run_add_invariant(args: argparse.Namespace) -> int:
         if "." in record.governed_scope
         else "GOVERNED_PREFIXES"
     )
-    print(f"created: {record.id}")
-    print(f"state_revision: {updated.revision}")
-    print(f"enforcement: {record.enforcement.value}")
-    print(f"status: {record.status.value}")
+    _print_stdout(f"created: {record.id}")
+    _print_stdout(f"state_revision: {updated.revision}")
+    _print_stdout(f"enforcement: {record.enforcement.value}")
+    _print_stdout(f"status: {record.status.value}")
     _print_scope_lines("governed_scope", record.governed_scope)
-    print(f"governed_scope_meaning: {scope_meaning}")
-    print("approval: (none)")
+    _print_stdout(f"governed_scope_meaning: {scope_meaning}")
+    _print_stdout("approval: (none)")
     return 0
 
 
@@ -480,9 +514,9 @@ def _print_acknowledgements(
     acknowledged_ids: tuple[str, ...],
     invariants_by_id: dict[str, state.Invariant],
 ) -> None:
-    print("acknowledged_invariant_ids:")
+    _print_stdout("acknowledged_invariant_ids:")
     if not acknowledged_ids:
-        print("- (none)")
+        _print_stdout("- (none)")
         return
     for invariant_id in acknowledged_ids:
         invariant = invariants_by_id[invariant_id]
@@ -491,7 +525,7 @@ def _print_acknowledgements(
             or invariant.status is state.InvariantStatus.SUPERSEDED
         )
         annotation = ", inert" if inert else ""
-        print(
+        _print_stdout(
             f"- {invariant_id} (enforcement={invariant.enforcement.value}, "
             f"status={invariant.status.value}{annotation})"
         )
@@ -503,29 +537,29 @@ def _run_approve(args: argparse.Namespace) -> int:
             paths.normalize_root_relative_scope(value) for value in args.scope
         )
     except ValueError as exc:
-        print(f"evidline: invalid approval scope: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: invalid approval scope: {exc}", file=sys.stderr)
         return _EXIT_INVALID_INPUT
     if len(set(normalized_scope)) != len(normalized_scope):
-        print(
+        _print_stderr(
             "evidline: invalid approval scope: duplicate normalized scope",
             file=sys.stderr,
         )
         return _EXIT_INVALID_INPUT
     acknowledged_ids = tuple(args.acknowledge or ())
     if any(not invariant_id for invariant_id in acknowledged_ids):
-        print(
+        _print_stderr(
             "evidline: invalid approval acknowledgement: id must be non-empty",
             file=sys.stderr,
         )
         return _EXIT_INVALID_INPUT
     if len(set(acknowledged_ids)) != len(acknowledged_ids):
-        print(
+        _print_stderr(
             "evidline: invalid approval acknowledgement: duplicate invariant id",
             file=sys.stderr,
         )
         return _EXIT_INVALID_INPUT
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        print(
+        _print_stderr(
             "evidline: approval requires interactive TTY input and output; "
             "TTY is defense-in-depth, not proof of human identity",
             file=sys.stderr,
@@ -534,18 +568,18 @@ def _run_approve(args: argparse.Namespace) -> int:
 
     root = paths.discover_project_root(args.root or os.curdir)
     if root is None:
-        print("evidline: state not initialized: project root not found", file=sys.stderr)
+        _print_stderr("evidline: state not initialized: project root not found", file=sys.stderr)
         return _EXIT_NOT_INITIALIZED
     try:
         current = state.load_state(root)
     except state.StateNotInitializedError as exc:
-        print(f"evidline: state not initialized: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state not initialized: {exc}", file=sys.stderr)
         return _EXIT_NOT_INITIALIZED
     except state.StateValidationError as exc:
-        print(f"evidline: invalid or unsupported state: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: invalid or unsupported state: {exc}", file=sys.stderr)
         return _EXIT_INVALID_STATE
     except state.StateIOError as exc:
-        print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state I/O failure: {exc}", file=sys.stderr)
         return _EXIT_STATE_IO
 
     invariants_by_id = {item.id: item for item in current.invariants}
@@ -564,13 +598,13 @@ def _run_approve(args: argparse.Namespace) -> int:
         if invariant_id in invariants_by_id:
             continue
         if invariant_id in all_record_ids:
-            print(
+            _print_stderr(
                 "evidline: invalid approval acknowledgement: id does not "
                 f"resolve to an Invariant: {invariant_id}",
                 file=sys.stderr,
             )
         else:
-            print(
+            _print_stderr(
                 "evidline: invalid approval acknowledgement: unknown "
                 f"invariant id: {invariant_id}",
                 file=sys.stderr,
@@ -579,13 +613,13 @@ def _run_approve(args: argparse.Namespace) -> int:
 
     selected = next((task for task in current.tasks if task.id == args.task_id), None)
     if selected is None:
-        print(f"evidline: approval task not found: {args.task_id}", file=sys.stderr)
+        _print_stderr(f"evidline: approval task not found: {args.task_id}", file=sys.stderr)
         return _EXIT_INVALID_INPUT
     if selected.status is state.TaskStatus.DONE:
-        print("evidline: DONE task cannot be approved", file=sys.stderr)
+        _print_stderr("evidline: DONE task cannot be approved", file=sys.stderr)
         return _EXIT_INVALID_INPUT
     if selected.intent is state.Intent.DENIED:
-        print("evidline: DENIED task cannot be approved", file=sys.stderr)
+        _print_stderr("evidline: DENIED task cannot be approved", file=sys.stderr)
         return _EXIT_INVALID_INPUT
     existing_active = next(
         (
@@ -596,7 +630,7 @@ def _run_approve(args: argparse.Namespace) -> int:
         None,
     )
     if existing_active is not None:
-        print(
+        _print_stderr(
             f"evidline: another task is already ACTIVE: {existing_active.id}",
             file=sys.stderr,
         )
@@ -608,7 +642,7 @@ def _run_approve(args: argparse.Namespace) -> int:
         any(task.authorized_scope for task in current.tasks)
         or any(invariant.governed_scope for invariant in current.invariants)
     ):
-        print(
+        _print_stderr(
             "evidline: approval cannot reinterpret foreign non-empty scopes",
             file=sys.stderr,
         )
@@ -636,27 +670,30 @@ def _run_approve(args: argparse.Namespace) -> int:
     try:
         state.validate_state(proposed)
     except state.StateValidationError as exc:
-        print(f"evidline: approval transition is invalid: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: approval transition is invalid: {exc}", file=sys.stderr)
         return _EXIT_INVALID_INPUT
 
-    print("Evidline bounded task approval")
-    print(f"task: {approved_task.id}")
-    print(f"task_description: {approved_task.description}")
-    print("authorized_scope:")
+    _print_stdout("Evidline bounded task approval")
+    _print_stdout(f"task: {approved_task.id}")
+    _print_stdout(f"task_description: {approved_task.description}")
+    _print_stdout("authorized_scope:")
     for scope in approved_task.authorized_scope:
-        print(f"- {scope}")
+        _print_stdout(f"- {scope}")
     _print_acknowledgements(acknowledged_ids, invariants_by_id)
     if semantics_changed:
-        print(
+        _print_stdout(
             "scope_semantics: "
             f"{current.scope_semantics.value} -> {host_semantics.value}"
         )
-    print("TTY interactivity is defense-in-depth, not proof of human identity.")
-    print(f"Type {approved_task.id} to approve, or anything else to cancel: ", end="")
-    sys.stdout.flush()
+    _print_stdout("TTY interactivity is defense-in-depth, not proof of human identity.")
+    _print_stdout(
+        f"Type {approved_task.id} to approve, or anything else to cancel: ",
+        end="",
+        flush=True,
+    )
     confirmation = sys.stdin.readline()
     if confirmation.rstrip("\r\n") != approved_task.id:
-        print("approval cancelled; state unchanged")
+        _print_stdout("approval cancelled; state unchanged")
         return _EXIT_INVALID_INPUT
 
     try:
@@ -664,20 +701,20 @@ def _run_approve(args: argparse.Namespace) -> int:
             root, proposed, expected_revision=current.revision
         )
     except state.StateConflictError as exc:
-        print(f"evidline: state write conflict: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state write conflict: {exc}", file=sys.stderr)
         return _EXIT_STATE_IO
     except state.StateValidationError as exc:
-        print(f"evidline: invalid approval state: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: invalid approval state: {exc}", file=sys.stderr)
         return _EXIT_INVALID_STATE
     except state.StateIOError as exc:
-        print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state I/O failure: {exc}", file=sys.stderr)
         return _EXIT_STATE_IO
 
-    print(f"approved: {approved_task.id}")
-    print(f"state_revision: {updated.revision}")
-    print("authorized_scope:")
+    _print_stdout(f"approved: {approved_task.id}")
+    _print_stdout(f"state_revision: {updated.revision}")
+    _print_stdout("authorized_scope:")
     for scope in approved_task.authorized_scope:
-        print(f"- {scope}")
+        _print_stdout(f"- {scope}")
     _print_acknowledgements(acknowledged_ids, invariants_by_id)
     return 0
 
@@ -691,24 +728,24 @@ def _run_context(args: argparse.Namespace) -> int:
         else:
             context = load_and_compile(args.root, profile=profile, budget_chars=budget)
     except state.StateNotInitializedError as exc:
-        print(f"evidline: state not initialized: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state not initialized: {exc}", file=sys.stderr)
         return _EXIT_NOT_INITIALIZED
     except state.StateValidationError as exc:
-        print(f"evidline: invalid or unsupported state: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: invalid or unsupported state: {exc}", file=sys.stderr)
         return _EXIT_INVALID_STATE
     except state.StateIOError as exc:
-        print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state I/O failure: {exc}", file=sys.stderr)
         return _EXIT_STATE_IO
     except ContextInputError as exc:
-        print(f"evidline: invalid compiler input: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: invalid compiler input: {exc}", file=sys.stderr)
         return _EXIT_INVALID_INPUT
 
     if args.format == "report":
-        sys.stdout.write(render_report(context))
+        transport.write_stdout(render_report(context), flush=True)
     elif args.format == "json":
-        sys.stdout.write(render_json(context))
+        transport.write_stdout(render_json(context), flush=True)
     else:
-        sys.stdout.write(render_payload(context))
+        transport.write_stdout(render_payload(context), flush=True)
     return 0
 
 
@@ -729,7 +766,7 @@ def _run_check_mutation(args: argparse.Namespace) -> int:
             args.conflicting_invariant_id or ()
         ),
     )
-    print(_INSPECTION_NOTICE, file=sys.stderr)
+    _print_stderr(_INSPECTION_NOTICE, file=sys.stderr)
     try:
         decision = mutation.load_and_decide(
             args.root or os.curdir,
@@ -737,25 +774,25 @@ def _run_check_mutation(args: argparse.Namespace) -> int:
             args.target,
         )
     except state.StateNotInitializedError as exc:
-        print(f"evidline: state not initialized: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state not initialized: {exc}", file=sys.stderr)
         return _EXIT_NOT_INITIALIZED
     except state.StateValidationError as exc:
-        print(f"evidline: invalid or unsupported state: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: invalid or unsupported state: {exc}", file=sys.stderr)
         return _EXIT_INVALID_STATE
     except state.StateIOError as exc:
-        print(f"evidline: state I/O failure: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: state I/O failure: {exc}", file=sys.stderr)
         return _EXIT_STATE_IO
     except mutation.MutationInputError as exc:
-        print(f"evidline: invalid mutation input: {exc}", file=sys.stderr)
+        _print_stderr(f"evidline: invalid mutation input: {exc}", file=sys.stderr)
         return _EXIT_INVALID_INPUT
     except Exception:
-        print("evidline: internal failure; treat as BLOCK", file=sys.stderr)
+        _print_stderr("evidline: internal failure; treat as BLOCK", file=sys.stderr)
         return _EXIT_INTERNAL_FAILURE
 
     if args.format == "json":
-        sys.stdout.write(mutation.render_decision_json(decision))
+        transport.write_stdout(mutation.render_decision_json(decision), flush=True)
     else:
-        sys.stdout.write(mutation.explain(decision) + "\n")
+        transport.write_stdout(mutation.explain(decision) + "\n", flush=True)
     return {
         mutation.MutationOutcome.ALLOW: 0,
         mutation.MutationOutcome.ASK: _EXIT_POLICY_ASK,
@@ -767,7 +804,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command is None:
-        sys.stderr.write(parser.format_help())
+        _print_stderr(parser.format_help(), end="")
         return _EXIT_USAGE
     if args.command == "init":
         return _run_init(args)

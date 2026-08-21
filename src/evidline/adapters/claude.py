@@ -8,7 +8,7 @@ import sys
 from types import MappingProxyType
 from typing import Any, Final
 
-from evidline import context, mutation, paths, state
+from evidline import context, mutation, paths, state, transport
 from evidline.context import ContextProfile
 from evidline.mutation import (
     MutationOutcome,
@@ -20,6 +20,9 @@ from evidline.state import Intent
 
 _EXIT_SUCCESS: Final = 0
 _EXIT_FAILURE: Final = 2
+_TRANSPORT_FAILURE_REASON: Final = (
+    "evidline adapter transport failure: canonical denial output unavailable."
+)
 
 _TARGET_FIELD: Final = MappingProxyType(
     {
@@ -78,9 +81,16 @@ def _session_start() -> int:
             profile=ContextProfile.SESSION,
             budget_chars=None,
         )
-        sys.stdout.write(context.render_payload(compiled))
+        rendered = context.render_payload(compiled)
     except Exception:
         _diagnose("evidline session-start failure: context unavailable")
+        return _EXIT_SUCCESS
+
+    try:
+        transport.write_stdout(rendered, flush=True)
+    except Exception:
+        _diagnose("evidline claude session-start output failed")
+        return _EXIT_FAILURE
     return _EXIT_SUCCESS
 
 
@@ -180,34 +190,61 @@ def _adapter_failure(reason: str) -> int:
 
 
 def _emit_permission_decision(permission: str, reason: str) -> int:
-    document = {
+    try:
+        transport.write_stdout(
+            _render_permission_decision(permission, reason),
+            flush=True,
+        )
+        return _EXIT_SUCCESS
+    except transport.OutputWriteError as exc:
+        if not exc.fallback_safe:
+            _diagnose("evidline claude adapter: structured stdout write failed")
+            return _EXIT_FAILURE
+    except UnicodeEncodeError:
+        pass
+    except Exception:
+        _diagnose("evidline claude adapter: structured stdout write failed")
+        return _EXIT_FAILURE
+
+    if permission == "deny":
+        try:
+            transport.write_stdout(
+                json.dumps(
+                    _permission_document("deny", _TRANSPORT_FAILURE_REASON),
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            return _EXIT_SUCCESS
+        except Exception:
+            pass
+
+    _diagnose("evidline claude adapter: structured stdout write failed")
+    return _EXIT_FAILURE
+
+
+def _render_permission_decision(permission: str, reason: str) -> str:
+    return json.dumps(
+        _permission_document(permission, reason),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _permission_document(permission: str, reason: str) -> dict[str, object]:
+    return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": permission,
             "permissionDecisionReason": reason,
         }
     }
-    rendered = json.dumps(
-        document,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    try:
-        written = sys.stdout.write(rendered)
-        if written is not None and written != len(rendered):
-            raise OSError("incomplete stdout write")
-    except Exception:
-        _diagnose("evidline claude adapter: structured stdout write failed")
-        return _EXIT_FAILURE
-    return _EXIT_SUCCESS
-
 
 def _diagnose(message: str) -> None:
-    try:
-        sys.stderr.write(message + "\n")
-    except Exception:
-        pass
+    transport.diagnose(message)
 
 
 if __name__ == "__main__":
