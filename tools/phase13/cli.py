@@ -7,6 +7,7 @@ from collections.abc import Sequence
 import sys
 from typing import Any
 
+from .claude_capture import derive_evidence_bindings
 from .common import Phase13Error, dump_json, load_json, sha256_file, sha256_text, write_json
 from .digest import capture_digest
 from .evidence import generate_evidence_record
@@ -141,6 +142,11 @@ def _build_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--control-answer-file", type=_existing_file)
     evidence.add_argument("--enabled-session-id-file", type=_existing_file)
     evidence.add_argument("--control-session-id-file", type=_existing_file)
+    evidence.add_argument(
+        "--private-correlation-record",
+        action="append",
+        type=_existing_file,
+    )
     _add_output(evidence)
 
     rollback = subparsers.add_parser(
@@ -199,6 +205,14 @@ def _apply_evidence_bindings(document: dict[str, Any], arguments: argparse.Names
         document[field] = hasher(path)
         if attr == "context_payload":
             document["context_payload_length"] = path.stat().st_size
+    correlation_records = getattr(arguments, "private_correlation_record", None) or ()
+    if len(correlation_records) > 1:
+        raise Phase13Error("exactly one private correlation record is permitted")
+    for path in correlation_records:
+        try:
+            document.update(derive_evidence_bindings(path, expected=document))
+        except (KeyError, OSError, UnicodeError, ValueError) as error:
+            raise Phase13Error(f"invalid private correlation record: {path}") from error
 
 
 if __name__ == "__main__":
