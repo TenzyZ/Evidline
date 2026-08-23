@@ -117,6 +117,18 @@ class ClaudeCaptureRecordTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        # Synthetic initialized project root so governed-target resolution
+        # follows the same root discovery and canonical evaluation as a real
+        # Phase 13 sandbox, without touching any live evidence destination.
+        self.sandbox = self.root / "sandbox"
+        (self.sandbox / "allowed").mkdir(parents=True)
+        (self.sandbox / "governed").mkdir()
+        (self.sandbox / ".evidline").mkdir()
+        # The helper resolves evidline from its executing interpreter's
+        # normal import environment; the development stand-in for the
+        # sandbox-installed distribution is repository src/ on PYTHONPATH.
+        self.helper_environment = os.environ.copy()
+        self.helper_environment["PYTHONPATH"] = str(REPO_ROOT / "src")
 
     def run_helper(
         self,
@@ -127,6 +139,7 @@ class ClaudeCaptureRecordTests(unittest.TestCase):
         stderr: bytes = b"",
         exit_code: int = 0,
         child_stdin: Path | None = None,
+        environment: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         child_code = (
             "import base64,pathlib,sys;"
@@ -156,17 +169,25 @@ class ClaudeCaptureRecordTests(unittest.TestCase):
             input=hook_input,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=environment if environment is not None else self.helper_environment,
             check=False,
         )
 
-    @staticmethod
-    def hook_input(tool_use_id: str | None) -> bytes:
+    def hook_input(
+        self,
+        tool_use_id: str | None,
+        *,
+        tool_name: str = "Write",
+        target_field: str = "file_path",
+        target: object = "governed/probe-deny.txt",
+    ) -> bytes:
         document: dict[str, object] = {
             "session_id": "session-private-123",
             "hook_event_name": "PreToolUse",
-            "tool_name": "Write",
+            "tool_name": tool_name,
+            "cwd": str(self.sandbox),
             "tool_input": {
-                "file_path": "governed/probe-deny.txt",
+                target_field: target,
                 "content": "PRIVATE-WRITE-CONTENT EVIDLINE-P13-NONCE",
             },
             "transcript": "PRIVATE-TRANSCRIPT",
@@ -271,8 +292,218 @@ class ClaudeCaptureRecordTests(unittest.TestCase):
                 records[1 - index]["tool_use_sha256"],
             )
 
-    def test_record_collision_preserves_adapter_result_and_existing_bytes(self) -> None:
+    def test_positive_write_does_not_consume_reserved_denial_record(self) -> None:
         record_path = self.root / "correlation.json"
+        positive = self.hook_input(
+            "toolu-positive", target="allowed/probe-allow.txt"
+        )
+        child_stdout = self.deny_stdout("positive-control-adapter-result")
+
+        completed = self.run_helper(
+            positive, record=record_path, stdout=child_stdout, exit_code=0
+        )
+
+        # The positive control still exercises the full wrapper -> adapter
+        # path; only the reserved denial-correlation slot is withheld.
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, child_stdout)
+        self.assertFalse(record_path.exists())
+
+        governed = self.run_helper(
+            self.hook_input("toolu-governed-after-positive"),
+            record=record_path,
+            stdout=self.deny_stdout("governed-adapter-result"),
+            exit_code=0,
+        )
+        self.assertEqual(governed.returncode, 0)
+        # The same reserved destination remains available for the governed
+        # event after the positive control passed through.
+        self.assertTrue(record_path.is_file())
+        body = json.loads(record_path.read_bytes())
+        self.assertEqual(
+            body["tool_use_sha256"],
+            hashlib.sha256(b"toolu-governed-after-positive").hexdigest(),
+        )
+
+    def test_governed_target_unexpected_allow_result_is_captured(self) -> None:
+        record_path = self.root / "correlation.json"
+        allow_stdout = json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "unexpected-allow-result",
+                }
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+
+        completed = self.run_helper(
+            self.hook_input("toolu-unexpected-allow"),
+            record=record_path,
+            stdout=allow_stdout,
+            exit_code=0,
+        )
+
+        # Capture eligibility follows target identity, not the expected deny
+        # result: a wrong governed outcome must stay observable.
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, allow_stdout)
+        self.assertTrue(record_path.is_file())
+        body = json.loads(record_path.read_bytes())
+        self.assertEqual(base64.b64decode(body["adapter_stdout_base64"]), allow_stdout)
+        self.assertEqual(body["adapter_exit_code"], 0)
+
+    def test_wrong_tool_or_wrong_write_target_never_consumes_record(self) -> None:
+        other_sandbox = self.root / "other-sandbox"
+        (other_sandbox / "governed").mkdir(parents=True)
+        (other_sandbox / ".evidline").mkdir()
+        outside_root = str(other_sandbox / "governed" / "probe-deny.txt")
+        cases: tuple[tuple[str, bytes], ...] = (
+            ("edit-tool", self.hook_input("toolu-edit", tool_name="Edit")),
+            (
+                "notebook-tool",
+                self.hook_input(
+                    "toolu-notebook",
+                    tool_name="NotebookEdit",
+                    target_field="notebook_path",
+                ),
+            ),
+            (
+                "positive-target",
+                self.hook_input("toolu-wrong-positive", target="allowed/probe-allow.txt"),
+            ),
+            (
+                "unrelated-in-root",
+                self.hook_input("toolu-wrong-unrelated", target="unrelated/other.txt"),
+            ),
+            (
+                "governed-suffix",
+                self.hook_input(
+                    "toolu-wrong-suffix", target="governed/probe-deny.txt.extra"
+                ),
+            ),
+            (
+                "nested-governed",
+                self.hook_input(
+                    "toolu-wrong-nested", target="another/governed/probe-deny.txt"
+                ),
+            ),
+            (
+                "outside-root",
+                self.hook_input("toolu-wrong-outside", target=outside_root),
+            ),
+        )
+
+        for name, payload in cases:
+            with self.subTest(case=name):
+                record_path = self.root / f"record-{name}.json"
+                child_stdout = self.deny_stdout(f"dispatched-{name}")
+                completed = self.run_helper(
+                    payload, record=record_path, stdout=child_stdout, exit_code=5
+                )
+                # Adapter dispatch stays unchanged for matched events; only
+                # the reserved denial-correlation slot is withheld.
+                self.assertEqual(completed.returncode, 5)
+                self.assertEqual(completed.stdout, child_stdout)
+                self.assertFalse(record_path.exists())
+
+    def test_malformed_or_unsafe_write_input_never_consumes_record(self) -> None:
+        def governed_document() -> dict[str, object]:
+            return json.loads(self.hook_input("toolu-malformed"))
+
+        cases: tuple[tuple[str, dict[str, object]], ...] = (
+            ("missing-tool-input", {**governed_document(), "tool_input": None}),
+            (
+                "non-object-tool-input",
+                {**governed_document(), "tool_input": ["governed/probe-deny.txt"]},
+            ),
+            ("missing-file-path", {"tool_input": {"content": "PRIVATE-CONTENT"}}),
+            ("empty-file-path", {"tool_input": {"file_path": ""}}),
+            ("non-string-file-path", {"tool_input": {"file_path": 123}}),
+            ("nul-path", {"tool_input": {"file_path": "governed/x\0y.txt"}}),
+            (
+                "ads-path",
+                {"tool_input": {"file_path": "governed/probe-deny.txt:hidden"}},
+            ),
+        )
+
+        for name, overrides in cases:
+            with self.subTest(case=name):
+                document = governed_document()
+                document.update(overrides)
+                record_path = self.root / f"record-{name}.json"
+                child_stdout = self.deny_stdout(f"malformed-{name}")
+                completed = self.run_helper(
+                    json.dumps(document).encode("utf-8"),
+                    record=record_path,
+                    stdout=child_stdout,
+                    exit_code=6,
+                )
+                self.assertEqual(completed.returncode, 6)
+                self.assertEqual(completed.stdout, child_stdout)
+                self.assertFalse(record_path.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows case-folded path equality")
+    def test_windows_separator_and_case_variants_resolve_to_governed_target(self) -> None:
+        for variant in ("governed\\probe-deny.txt", "Governed\\Probe-Deny.TXT"):
+            with self.subTest(variant=variant):
+                record_path = self.root / f"record-variant-{abs(hash(variant))}.json"
+                completed = self.run_helper(
+                    self.hook_input(f"toolu-{variant}", target=variant),
+                    record=record_path,
+                    stdout=self.deny_stdout("windows-variant"),
+                    exit_code=0,
+                )
+                self.assertEqual(completed.returncode, 0)
+                self.assertTrue(record_path.is_file())
+                body = json.loads(record_path.read_bytes())
+                self.assertEqual(body["tool_name"], "Write")
+
+    def test_direct_script_resolves_evidline_from_interpreter_environment(self) -> None:
+        fake_environment = self.root / "fake-evidline-environment"
+        (fake_environment / "evidline").mkdir(parents=True)
+        (fake_environment / "evidline" / "__init__.py").write_text("", encoding="utf-8")
+        # A stand-in distribution whose discovery always fails: if the
+        # helper imported evidline from anywhere except the interpreter's
+        # normal resolution order, the governed target below would stay
+        # ineligible in a distinguishable way.
+        (fake_environment / "evidline" / "paths.py").write_text(
+            "def discover_project_root(start):\n"
+            "    return None\n"
+            "def evaluate_mutation_path(root, target):\n"
+            "    raise AssertionError('evaluate must not run after failed discovery')\n",
+            encoding="utf-8",
+        )
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(fake_environment)
+        record_path = self.root / "correlation.json"
+        child_stdout = self.deny_stdout("fake-evidline-provenance")
+
+        completed = self.run_helper(
+            self.hook_input("toolu-fake-evidline"),
+            record=record_path,
+            stdout=child_stdout,
+            environment=environment,
+        )
+
+        # The sibling Phase 13 contract still imported from the script
+        # directory and transport stayed byte-exact: the adapter child ran
+        # to completion instead of the helper dying at import time.
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, child_stdout)
+        self.assertEqual(completed.stderr, b"")
+        # evidline.paths resolved from the interpreter environment (the
+        # fake distribution), so governed-target discovery returned None
+        # and no reserved record was created. A repository src/ injection
+        # would have resolved real evidline and created the record.
+        self.assertFalse(record_path.exists())
+
+    def test_record_collision_preserves_adapter_result_and_existing_bytes(self) -> None:
+        collision_directory = self.root / "collision"
+        collision_directory.mkdir()
+        record_path = collision_directory / "correlation.json"
         original = b"pre-existing-private-record\x00"
         record_path.write_bytes(original)
         child_stdout = self.deny_stdout("collision-result")
@@ -290,7 +521,10 @@ class ClaudeCaptureRecordTests(unittest.TestCase):
         self.assertEqual(completed.stdout, child_stdout)
         self.assertEqual(completed.stderr, child_stderr)
         self.assertEqual(record_path.read_bytes(), original)
-        self.assertEqual({path.name for path in self.root.iterdir()}, {record_path.name})
+        self.assertEqual(
+            {path.name for path in collision_directory.iterdir()},
+            {record_path.name},
+        )
 
     def test_missing_tool_use_identity_runs_child_but_creates_no_record(self) -> None:
         record_path = self.root / "correlation.json"
@@ -414,6 +648,7 @@ class ClaudeCaptureRecordTests(unittest.TestCase):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=self.helper_environment,
         )
         # The helper relays only after stdin EOF and child exit, so closing
         # one read end first fails exactly that relay, deterministically.
@@ -961,31 +1196,28 @@ class ClaudeCaptureOfflineAdapterTests(unittest.TestCase):
         record = self.records / "allow.json"
         captured = self.run_helper(payload, record=record)
 
+        # The positive control still traverses the full wrapper -> adapter
+        # path unchanged, but must not consume the reserved denial record.
         self.assertEqual(captured.returncode, direct.returncode)
         self.assertEqual(captured.stdout, direct.stdout)
         self.assertEqual(captured.stderr, direct.stderr)
         self.assertFalse((self.sandbox / "allowed" / "probe-allow.txt").exists())
+        self.assertFalse(record.exists())
+
+        governed = self.hook_input("governed/probe-deny.txt", "toolu-offline-deny")
+        captured_governed = self.run_helper(governed, record=record)
+        self.assertEqual(captured_governed.returncode, 0)
+        # The reserved destination remains available for the governed event.
+        self.assertTrue(record.is_file())
         body = json.loads(record.read_bytes())
         self.assertEqual(body["adapter_exit_code"], 0)
-        self.assertEqual(base64.b64decode(body["adapter_stdout_base64"]), b"")
+        self.assertNotEqual(base64.b64decode(body["adapter_stdout_base64"]), b"")
         self.assertEqual(
             body["tool_use_sha256"],
-            hashlib.sha256(b"toolu-offline-allow").hexdigest(),
-        )
-        self.assertEqual(
-            body["session_sha256"],
-            hashlib.sha256(b"session-offline-private").hexdigest(),
+            hashlib.sha256(b"toolu-offline-deny").hexdigest(),
         )
         self.assertNotIn(b"PHASE13-PRIVATE-CONTENT", record.read_bytes())
-        self.assertNotIn(b"toolu-offline-allow", record.read_bytes())
-
-        evidence = self.derive_evidence(record)
-        self.assertEqual(evidence["adapter_exit_code"], 0)
-        self.assertEqual(
-            evidence["tool_use_sha256"],
-            hashlib.sha256(b"toolu-offline-allow").hexdigest(),
-        )
-        self.assertNotIn("sanitized_hook_decision", evidence)
+        self.assertNotIn(b"toolu-offline-deny", record.read_bytes())
 
     def test_offline_block_derives_deny_decision_and_exit(self) -> None:
         payload = self.hook_input("governed/probe-deny.txt", "toolu-offline-deny")
@@ -1042,9 +1274,13 @@ class ClaudeCaptureOfflineAdapterTests(unittest.TestCase):
         )
 
     def test_offline_adapter_failure_capture_cannot_become_verified(self) -> None:
-        document = json.loads(self.hook_input("governed/probe-deny.txt", "toolu-f"))
-        document["tool_input"].pop("file_path")
-        payload = json.dumps(document).encode("utf-8")
+        # The exact governed target stays capture-eligible even when state
+        # cannot be loaded; the record must preserve that adapter failure
+        # rather than hiding a non-decision result.
+        payload = self.hook_input("governed/probe-deny.txt", "toolu-f")
+        (self.sandbox / ".evidline" / "state.json").write_text(
+            "{ invalid state", encoding="utf-8"
+        )
         direct = self.run_adapter_direct(payload)
         self.assertEqual(direct.returncode, 0)
         reason = json.loads(direct.stdout)["hookSpecificOutput"][
@@ -1058,6 +1294,9 @@ class ClaudeCaptureOfflineAdapterTests(unittest.TestCase):
             (captured.returncode, captured.stdout, captured.stderr),
             (direct.returncode, direct.stdout, direct.stderr),
         )
+        self.assertTrue(record.is_file())
+        body = json.loads(record.read_bytes())
+        self.assertEqual(base64.b64decode(body["adapter_stdout_base64"]), direct.stdout)
 
         with self.assertRaises(AssertionError):
             self.derive_evidence(record, **verified_denial_input())

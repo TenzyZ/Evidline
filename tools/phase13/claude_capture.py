@@ -12,6 +12,16 @@ import subprocess
 import sys
 from typing import BinaryIO, Final
 
+if not __package__:
+    # Direct script execution by the configured hook command: the script
+    # directory is already sys.path[0], so only the sibling Phase 13
+    # contract imports from this location. evidline must resolve from the
+    # executing interpreter's normal import environment, never from a
+    # repository layout injected here.
+    from contract import CLAUDE_PROVING_TOOL, GOVERNED_PROBE
+else:
+    from .contract import CLAUDE_PROVING_TOOL, GOVERNED_PROBE
+
 
 _EXIT_NO_ADAPTER_RESULT: Final = 1
 _RECORD_FORMAT: Final = "evidline.phase13.claude-pretool-correlation.v1"
@@ -53,6 +63,47 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _is_governed_probe_write(payload: Mapping[str, object]) -> bool:
+    """Whether one event's exact resolved target is the governed T3 probe.
+
+    Eligibility follows event identity and canonical target only, mirroring
+    the adapter's own root discovery (cwd first, then the raw target) and the
+    core's path evaluation. It must never depend on the adapter's decision:
+    the reserved record exists to preserve whatever the adapter actually
+    returned for the governed event, including an unexpected ALLOW or an
+    adapter failure.
+    """
+
+    # Normal interpreter import resolution only: the sandbox-installed
+    # Evidline that the executing interpreter provides. Import lazily so
+    # transport-only invocations never depend on it.
+    from evidline import paths
+
+    if payload.get("tool_name") != CLAUDE_PROVING_TOOL:
+        return False
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, Mapping):
+        return False
+    target = tool_input.get("file_path")
+    if not isinstance(target, str) or not target:
+        return False
+    cwd = payload.get("cwd")
+    root = (
+        paths.discover_project_root(cwd)
+        if isinstance(cwd, str) and cwd
+        else None
+    )
+    if root is None:
+        root = paths.discover_project_root(target)
+    if root is None:
+        return False
+    evaluation = paths.evaluate_mutation_path(root, target)
+    governed = paths.evaluate_mutation_path(root, GOVERNED_PROBE)
+    if not evaluation.safe or not governed.safe:
+        return False
+    return evaluation.canonical_target == governed.canonical_target
+
+
 def _attempt_private_record(
     path: Path,
     hook_input: bytes,
@@ -72,6 +123,8 @@ def _attempt_private_record(
     ):
         return
     if hook_event_name != "PreToolUse":
+        return
+    if not _is_governed_probe_write(payload):
         return
     record = {
         "adapter_exit_code": adapter_exit_code,
