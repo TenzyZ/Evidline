@@ -65,7 +65,7 @@ The five checks:
 
 The disposition has three outcomes. `ALLOW` means the check found no policy problem and carries no failure reasons or next step. It does not mean Evidline gives the agent more permissions. `ASK` means a human decision or more information is needed. `BLOCK` means the change cannot currently be justified, and Evidline explains the exact target, the reason, the missing requirement, and the smallest safe next step.
 
-The pure core of the mutation decision engine is implemented in [src/evidline/mutation.py](src/evidline/mutation.py). The manually invoked `check-mutation` CLI provides non-enforcing inspection. It grants no permission, executes no mutation, and is not live enforcement. The bounded, inactive-by-default transports are documented in the [Claude Code adapter guide](docs/claude-code-adapter.md) and [Codex adapter guide](docs/codex-adapter.md).
+The pure core of the mutation decision engine is implemented in [src/evidline/mutation.py](src/evidline/mutation.py). The manually invoked `check-mutation` CLI provides non-enforcing inspection. It grants no permission, executes no mutation, and is not live enforcement. Evidline V1.0 production support targets Claude Code only. The bounded Claude transport is documented in the [Claude Code adapter guide](docs/claude-code-adapter.md). The retained [Codex adapter implementation](docs/codex-adapter.md) is experimental and deferred for production support until post-V1.
 
 ## State and evidence foundation
 
@@ -104,7 +104,7 @@ Today Evidline refuses to persist `VERIFIED`, because the reproducible verifier 
 | Designed | Human controlled authority model | [ADR-0009](docs/adr/ADR-0009-human-controlled-authority.md) |
 | Designed | V1 architecture | [Architecture decisions](docs/adr/) |
 | Built | Claude Code adapter transport | [Claude Code adapter guide](docs/claude-code-adapter.md) |
-| Built | Codex adapter transport | [Codex adapter guide](docs/codex-adapter.md) |
+| Built (experimental; post-V1 production support) | Codex adapter transport | [Codex adapter guide](docs/codex-adapter.md) |
 | Built | Cross-harness benchmark (synthetic) | [Benchmark](docs/benchmark.md) |
 | Built | Verified handoff (explicit `verified-handoff` context profile) | [ADR-0023](docs/adr/ADR-0023-verified-handoff.md) |
 | Built | Doctor command | [ADR-0025](docs/adr/ADR-0025-doctor-diagnostic-validation.md) |
@@ -112,7 +112,7 @@ Today Evidline refuses to persist `VERIFIED`, because the reproducible verifier 
 
 The benchmark is synthetic: it measures the implemented core and the adapter transports, not live hook enforcement, and it currently records both V1 goals below as blocked.
 
-There is no complete product surface yet. Claude or Codex hook activation, live enforcement, and any published release are still future work.
+There is no complete product surface yet. Claude hook activation, live enforcement, and any published release are still future work. Codex live production acceptance is post-V1 and does not block V1.0.
 
 A local CLI flow is:
 

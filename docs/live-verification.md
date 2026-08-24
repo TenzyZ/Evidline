@@ -2,40 +2,38 @@
 
 ```text
 STATUS:
-CONTRACT ACCEPTED
-CLAUDE RUNS 1-3 EXECUTED ON UNCOMMITTED RUNTIME
-EVIDENCE FORENSIC ONLY
+CLAUDE-ONLY V1 LIVE ACCEPTANCE
+CLAUDE T3 LIVE_MUTATION_DENIAL VERIFIED
+SANITIZED REPRESENTATION COMMITTED; RAW CAPTURES RETAINED OUTSIDE GIT
 CODEX FOUR-SESSION CAMPAIGN EXECUTED 2026-08-21
 ON UNCOMMITTED RUNTIME
 S_CONTROL / S_ENABLED / S_POS OBSERVED
 S_DENY INCONCLUSIVE (NO apply_patch TOOL ATTEMPT)
-NO COMMITTED-RUNTIME CAMPAIGN EXISTS
-CLEAN COMMITTED-BASELINE CAMPAIGN REQUIRED
+CODEX LIVE PRODUCTION ACCEPTANCE DEFERRED POST-V1
 VAB-7 REMAINS OPEN
 ```
 
-This is an operator procedure for the Phase 13 contract frozen in
-[ADR-0027](adr/ADR-0027-vab-7-live-verification-contract.md). Claude runs 1-3
-occurred on uncommitted runtime and remain forensic only. A Codex four-session
-campaign executed 2026-08-21 on uncommitted runtime; S_CONTROL, S_ENABLED, and
-S_POS were observed, and S_DENY is inconclusive because no apply_patch tool
-attempt occurred. No campaign has run on a committed runtime. A clean
-committed-baseline campaign remains required. This document does not accept
-prior live evidence as verified proof.
+This procedure originated with the Phase 13 contract frozen in
+[ADR-0027](adr/ADR-0027-vab-7-live-verification-contract.md). Its V1 harness
+scope is narrowed by
+[ADR-0029](adr/ADR-0029-claude-first-v1-support-boundary.md) to Claude Code.
+Claude runs 1-3 remain forensic only; the later retained Claude T3 denial chain
+is represented by a sanitized committed artifact while raw captures remain
+outside Git. The historical Codex campaign remains inconclusive and its useful
+forensic procedure is retained below for post-V1 experimental work. Codex live
+production acceptance is not a V1 blocker.
 
 Do not treat any section below as evidence that a later harness dispatch,
 injection, or denial has been accepted.
 
 ```text
-CONTRACT ACCEPTED
-CLAUDE RUNS 1-3 EXECUTED ON UNCOMMITTED RUNTIME
-EVIDENCE FORENSIC ONLY
+CLAUDE-ONLY V1 LIVE ACCEPTANCE
+CLAUDE T3 LIVE_MUTATION_DENIAL VERIFIED
 CODEX FOUR-SESSION CAMPAIGN EXECUTED 2026-08-21
 ON UNCOMMITTED RUNTIME
 S_CONTROL / S_ENABLED / S_POS OBSERVED
 S_DENY INCONCLUSIVE (NO apply_patch TOOL ATTEMPT)
-NO COMMITTED-RUNTIME CAMPAIGN EXISTS
-CLEAN COMMITTED-BASELINE CAMPAIGN REQUIRED
+CODEX LIVE PRODUCTION ACCEPTANCE DEFERRED POST-V1
 VAB-7 REMAINS OPEN
 ```
 
@@ -49,12 +47,14 @@ LIVE_CONTEXT_INJECTION
 LIVE_MUTATION_DENIAL
 ```
 
-on both Claude Code and Codex, using only:
+on Claude Code for V1, using only:
 
 ```text
-Claude:  SessionStart + PreToolUse + Write
-Codex:   SessionStart + PreToolUse + apply_patch
+Claude: SessionStart + PreToolUse + Write
 ```
+
+The retained Codex SessionStart, PreToolUse, and `apply_patch` procedure is
+post-V1 experimental material, not a V1 acceptance requirement.
 
 This procedure does **not** claim complete harness enforcement, Bash coverage,
 PowerShell coverage, Monitor coverage, MCP coverage, hosted-tool coverage, or a
@@ -252,7 +252,7 @@ Before live Claude execution:
 4. Verify ALLOW and BLOCK offline with `check-mutation`.
 5. **STOP** unless live Claude authorization is already explicit.
 
-## Codex hook configuration
+## Post-V1 experimental Codex hook configuration
 
 Sandbox project hook config:
 
@@ -344,8 +344,9 @@ re-verify before any later campaign; not active by this document):
 }
 ```
 
-This records the shape Codex accepted. It is not authorization to recreate
-the sandbox, rewrite hook configuration, or start a new campaign.
+This records the shape Codex accepted. It is retained for post-V1 experimental
+work and is not a V1 acceptance gate or authorization to recreate the sandbox,
+rewrite hook configuration, or start a new campaign.
 
 ## Codex trust gates
 
@@ -509,27 +510,30 @@ path.write_bytes(direct_payload_bytes)
 ```
 
 This preserves the exact bytes with no BOM, newline translation, or locale
-conversion. Decode both boundaries strictly and compare semantics:
+conversion. For the current Claude plain-stdout transport, compare the two byte
+streams directly:
 
 ```python
-adapter_json = json.loads(adapter_stdout_bytes.decode("utf-8"))
-additional_context = adapter_json["hookSpecificOutput"]["additionalContext"]
-direct_payload = direct_payload_bytes.decode("utf-8")
-assert additional_context == direct_payload
+assert adapter_stdout_bytes == direct_payload_bytes
 ```
 
 The comparison permits no Unicode normalization, newline normalization,
-whitespace trimming, or case folding. The adapter JSON envelope bytes are not
-compared to the direct payload bytes.
+whitespace trimming, or case folding. A JSON envelope is not introduced for
+Claude merely for symmetry with Codex.
 
 Hash and measure the exact logical context encoded canonically:
 
 ```python
-canonical_bytes = additional_context.encode("utf-8")
+canonical_bytes = adapter_stdout_bytes
 context_payload_sha256 = hashlib.sha256(canonical_bytes).hexdigest()
 context_payload_length = len(canonical_bytes)  # bytes
-budget_measurement = len(additional_context)   # characters
+budget_measurement = len(canonical_bytes.decode("utf-8"))  # characters
 ```
+
+Current Anthropic documentation limits context-bearing hook output to 10,000
+characters. `context_payload_length` is a byte measurement and does not express
+that character limit; exact deterministic enforcement is deferred to bounded
+Phase 15 planning.
 
 For the previously diagnosed PRELIVE fixture, the future predictions are 282
 characters, 286 UTF-8 bytes, and
@@ -783,8 +787,8 @@ captures exist.
 
 Stop on `FAILED` or `FAILED_OPEN`. Do not widen scope to repair the result.
 
-Execute Claude first. If Claude fails, classify the failure before deciding
-whether Codex should run.
+Execute only the separately authorized Claude acceptance campaign. Codex live
+execution is post-V1 and requires separate authorization.
 
 ## Rollback
 
