@@ -1574,8 +1574,10 @@ class CliTests(unittest.TestCase):
     def run_cli(self, *args: str) -> tuple[int, str, str]:
         from evidline.cli import main
 
-        stdout = io.StringIO()
-        stderr = io.StringIO()
+        stdout_bytes = io.BytesIO()
+        stderr_bytes = io.BytesIO()
+        stdout = io.TextIOWrapper(stdout_bytes, encoding="utf-8")
+        stderr = io.TextIOWrapper(stderr_bytes, encoding="utf-8")
         code = 0
         with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
             with mock.patch("os.curdir", str(self.root)):
@@ -1583,7 +1585,13 @@ class CliTests(unittest.TestCase):
                     code = main(args)
                 except SystemExit as exc:
                     code = exc.code if isinstance(exc.code, int) else 0
-        return code, stdout.getvalue(), stderr.getvalue()
+        stdout.flush()
+        stderr.flush()
+        return (
+            code,
+            stdout_bytes.getvalue().decode("utf-8"),
+            stderr_bytes.getvalue().decode("utf-8"),
+        )
 
     def test_version_regression(self) -> None:
         code, stdout, stderr = self.run_cli("--version")

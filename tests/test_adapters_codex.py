@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
@@ -122,6 +123,106 @@ def patch_text(*lines: str) -> str:
     return "\n".join(("*** Begin Patch", *lines, "*** End Patch"))
 
 
+class BinaryOutput:
+    """Text facade with an independently controllable binary boundary."""
+
+    def __init__(
+        self,
+        *,
+        text_encoding: str = "utf-8",
+        fail_binary_writes: int | None = 0,
+        write_actions: tuple[int | BaseException | _EmitThenRaise, ...] = (),
+        zero_progress_forever: bool = False,
+    ) -> None:
+        self._raw = io.BytesIO()
+        self._text_encoding = text_encoding
+        self.buffer = _ControlledBinaryWriter(
+            self._raw,
+            fail_binary_writes,
+            write_actions,
+            zero_progress_forever,
+        )
+
+    def write(self, text: str) -> int:
+        self._raw.write(text.encode(self._text_encoding))
+        return len(text)
+
+    def flush(self) -> None:
+        self._raw.flush()
+
+    def getvalue(self) -> bytes:
+        return self._raw.getvalue()
+
+
+class _ControlledBinaryWriter:
+    def __init__(
+        self,
+        raw: io.BytesIO,
+        failures_remaining: int | None,
+        write_actions: tuple[int | BaseException | _EmitThenRaise, ...],
+        zero_progress_forever: bool,
+    ) -> None:
+        self._raw = raw
+        self._failures_remaining = failures_remaining
+        self._write_actions = list(write_actions)
+        self._zero_progress_forever = zero_progress_forever
+
+    def write(self, data: bytes) -> int:
+        if self._write_actions:
+            action = self._write_actions.pop(0)
+            if isinstance(action, _EmitThenRaise):
+                self._raw.write(data[: action.byte_count])
+                raise action.error
+            if isinstance(action, BaseException):
+                raise action
+            self._raw.write(data[:action])
+            return action
+        if self._zero_progress_forever:
+            return 0
+        if self._failures_remaining is None:
+            raise OSError("binary stdout unavailable")
+        if self._failures_remaining:
+            self._failures_remaining -= 1
+            raise OSError("binary stdout unavailable")
+        return self._raw.write(data)
+
+    def flush(self) -> None:
+        self._raw.flush()
+
+
+class _EmitThenRaise:
+    def __init__(self, byte_count: int, error: BaseException) -> None:
+        self.byte_count = byte_count
+        self.error = error
+
+
+class _FailOnceRaw(io.RawIOBase):
+    def __init__(self, byte_count: int) -> None:
+        super().__init__()
+        self.sink = io.BytesIO()
+        self._byte_count = byte_count
+        self._failed = False
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data) -> int:
+        if not self._failed:
+            self._failed = True
+            self.sink.write(bytes(data[: self._byte_count]))
+            raise OSError("raw write failed after emitting bytes")
+        return self.sink.write(bytes(data))
+
+
+class _BufferedFailOnceOutput:
+    def __init__(self) -> None:
+        self.raw = _FailOnceRaw(byte_count=7)
+        self.buffer = io.BufferedWriter(self.raw, buffer_size=8)
+
+    def getvalue(self) -> bytes:
+        return self.raw.sink.getvalue()
+
+
 class CodexAdapterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -173,11 +274,26 @@ class CodexAdapterTests(unittest.TestCase):
         *,
         raw_input: str | None = None,
     ) -> tuple[int, str, str]:
+        code, stdout, stderr = self.invoke_bytes(
+            command,
+            payload,
+            raw_input=raw_input,
+        )
+        return code, stdout.decode("utf-8"), stderr.decode("utf-8")
+
+    def invoke_bytes(
+        self,
+        command: str,
+        payload: object | None = None,
+        *,
+        raw_input: str | None = None,
+        stdout: BinaryOutput | _BufferedFailOnceOutput | None = None,
+    ) -> tuple[int, bytes, bytes]:
         stdin = io.StringIO(
             raw_input if raw_input is not None else json.dumps(payload)
         )
-        stdout = io.StringIO()
-        stderr = io.StringIO()
+        stdout = stdout or BinaryOutput()
+        stderr = BinaryOutput()
         with (
             mock.patch("sys.stdin", stdin),
             mock.patch("sys.stdout", stdout),
@@ -185,6 +301,12 @@ class CodexAdapterTests(unittest.TestCase):
         ):
             code = codex.main((command,))
         return code, stdout.getvalue(), stderr.getvalue()
+
+    def strict_utf8(self, raw: bytes) -> str:
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            self.fail(f"stdout is not strict UTF-8: {exc}")
 
     def session_output(self, stdout: str) -> dict[str, object]:
         document = json.loads(stdout)
@@ -240,6 +362,64 @@ class CodexAdapterTests(unittest.TestCase):
         code, stdout, stderr = self.invoke("session-start", self.session_payload())
         self.assertEqual((code, stderr), (0, ""))
         self.assertEqual(self.session_output(stdout)["additionalContext"], expected)
+
+    def test_session_start_emits_unicode_context_as_utf8_bytes(self) -> None:
+        self.write_state(make_state(governed_scope=("src",)))
+        expected = context.render_payload(
+            context.load_and_compile(
+                self.root,
+                profile=ContextProfile.SESSION,
+                budget_chars=None,
+            )
+        )
+        self.assertIn("—", expected)
+        output = BinaryOutput(text_encoding="cp1252")
+
+        code, raw, stderr = self.invoke_bytes(
+            "session-start", self.session_payload(), stdout=output
+        )
+
+        self.assertEqual((code, stderr), (0, b""))
+        self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
+        document = json.loads(self.strict_utf8(raw))
+        hook_output = document["hookSpecificOutput"]
+        self.assertEqual(hook_output["hookEventName"], "SessionStart")
+        self.assertEqual(hook_output["additionalContext"], expected)
+
+    def test_session_start_preserves_unicode_outside_cp1252(self) -> None:
+        document = make_state(governed_scope=("src",))
+        invariant = document.invariants[0]
+        self.write_state(
+            StateDocument(
+                schema_version=document.schema_version,
+                revision=document.revision,
+                project=document.project,
+                invariants=(
+                    Invariant(
+                        id=invariant.id,
+                        description="Protect ✓ 漢字",
+                        enforcement=invariant.enforcement,
+                        status=invariant.status,
+                        governed_scope=invariant.governed_scope,
+                    ),
+                ),
+                decisions=document.decisions,
+                tasks=document.tasks,
+                claims=document.claims,
+                evidence=document.evidence,
+                counters=document.counters,
+            )
+        )
+        output = BinaryOutput(text_encoding="cp1252")
+
+        code, raw, stderr = self.invoke_bytes(
+            "session-start", self.session_payload(), stdout=output
+        )
+
+        self.assertEqual((code, stderr), (0, b""))
+        decoded = self.strict_utf8(raw)
+        self.assertIn("✓", decoded)
+        self.assertIn("漢字", decoded)
 
     def test_session_start_uses_project_default_budget(self) -> None:
         minimum = context.minimum_budget_chars(ContextProfile.SESSION)
@@ -638,6 +818,17 @@ class CodexAdapterTests(unittest.TestCase):
             result = self.invoke("pre-tool-use", self.tool_payload())
         self.assertEqual(result, (0, "", ""))
 
+    def test_allow_control_emits_no_bytes(self) -> None:
+        with mock.patch.object(
+            codex.mutation,
+            "evaluate_and_decide",
+            return_value=synthetic_decision(MutationOutcome.ALLOW),
+        ):
+            code, stdout, stderr = self.invoke_bytes(
+                "pre-tool-use", self.tool_payload()
+            )
+        self.assertEqual((code, stdout, stderr), (0, b"", b""))
+
     def test_real_scoped_authorization_reaches_silent_allow(self) -> None:
         self.write_state(
             make_state(
@@ -671,6 +862,133 @@ class CodexAdapterTests(unittest.TestCase):
             MutationReason.INVARIANT_UNACKNOWLEDGED.value,
             str(output["permissionDecisionReason"]),
         )
+
+    def test_unicode_block_cannot_become_unparseable_success(self) -> None:
+        self.write_state(
+            make_state(
+                active_task=True,
+                authorized_scope=("src",),
+                trusted=True,
+                governed_scope=("src",),
+            )
+        )
+        output = BinaryOutput(text_encoding="cp1252")
+
+        code, raw, stderr = self.invoke_bytes(
+            "pre-tool-use",
+            self.tool_payload(
+                patch_text("*** Update File: src/café.py", "@@", "+line")
+            ),
+            stdout=output,
+        )
+
+        self.assertEqual((code, stderr), (0, b""))
+        self.assertNotEqual(raw, b"")
+        document = json.loads(self.strict_utf8(raw))
+        hook_output = document["hookSpecificOutput"]
+        self.assertEqual(hook_output["permissionDecision"], "deny")
+        self.assertIn("café.py", hook_output["permissionDecisionReason"])
+
+    def test_denial_transport_completes_multiple_short_writes(self) -> None:
+        output = BinaryOutput(write_actions=(1, 2, 3))
+
+        code, raw, stderr = self.invoke_bytes(
+            "pre-tool-use", self.tool_payload(), stdout=output
+        )
+
+        self.assertEqual((code, stderr), (0, b""))
+        document = json.loads(self.strict_utf8(raw))
+        hook_output = document["hookSpecificOutput"]
+        self.assertEqual(hook_output["permissionDecision"], "deny")
+
+    def test_partial_denial_write_then_failure_does_not_append_fallback(self) -> None:
+        output = BinaryOutput(
+            write_actions=(7, OSError("binary stdout unavailable"))
+        )
+
+        code, raw, stderr = self.invoke_bytes(
+            "pre-tool-use", self.tool_payload(), stdout=output
+        )
+
+        self.assertEqual(code, 2)
+        self.assertNotEqual(raw, b"")
+        self.assertNotIn(b"transport failure", raw)
+        self.assertIn(b"structured stdout write failed", stderr)
+
+    def test_same_call_emit_then_failure_does_not_append_fallback(self) -> None:
+        output = BinaryOutput(
+            write_actions=(_EmitThenRaise(7, OSError("write failed")),)
+        )
+
+        code, raw, stderr = self.invoke_bytes(
+            "pre-tool-use", self.tool_payload(), stdout=output
+        )
+
+        self.assertEqual(code, 2)
+        self.assertNotEqual(raw, b"")
+        self.assertNotIn(b"transport failure", raw)
+        self.assertIn(b"structured stdout write failed", stderr)
+
+    def test_blocking_write_with_characters_written_does_not_append_fallback(
+        self,
+    ) -> None:
+        error = BlockingIOError(errno.EAGAIN, "blocked", 7)
+        output = BinaryOutput(write_actions=(_EmitThenRaise(7, error),))
+
+        code, raw, stderr = self.invoke_bytes(
+            "pre-tool-use", self.tool_payload(), stdout=output
+        )
+
+        self.assertEqual(code, 2)
+        self.assertNotEqual(raw, b"")
+        self.assertNotIn(b"transport failure", raw)
+        self.assertIn(b"structured stdout write failed", stderr)
+
+    def test_real_buffered_writer_failure_does_not_append_fallback(self) -> None:
+        output = _BufferedFailOnceOutput()
+        long_reason = "governed target denied: " + ("x" * 16_384)
+
+        with mock.patch.object(codex, "_policy_reason", return_value=long_reason):
+            code, raw, stderr = self.invoke_bytes(
+                "pre-tool-use", self.tool_payload(), stdout=output
+            )
+
+        self.assertEqual(code, 2)
+        self.assertNotEqual(raw, b"")
+        self.assertNotIn(b"transport failure", raw)
+        self.assertIn(b"structured stdout write failed", stderr)
+
+    def test_denial_encoding_failure_emits_ascii_safe_denial(self) -> None:
+        with mock.patch.object(codex, "_policy_reason", return_value="deny \ud800"):
+            code, raw, stderr = self.invoke_bytes(
+                "pre-tool-use", self.tool_payload()
+            )
+
+        self.assertEqual((code, stderr), (0, b""))
+        document = json.loads(raw.decode("ascii"))
+        hook_output = document["hookSpecificOutput"]
+        self.assertEqual(hook_output["permissionDecision"], "deny")
+        self.assertIn("transport failure", hook_output["permissionDecisionReason"])
+
+    def test_zero_progress_denial_writer_exits_nonzero_without_output(self) -> None:
+        output = BinaryOutput(zero_progress_forever=True)
+
+        code, raw, stderr = self.invoke_bytes(
+            "pre-tool-use", self.tool_payload(), stdout=output
+        )
+
+        self.assertEqual((code, raw), (2, b""))
+        self.assertIn(b"structured stdout write failed", stderr)
+
+    def test_total_denial_transport_failure_exits_nonzero(self) -> None:
+        output = BinaryOutput(fail_binary_writes=None)
+
+        code, raw, stderr = self.invoke_bytes(
+            "pre-tool-use", self.tool_payload(), stdout=output
+        )
+
+        self.assertEqual((code, raw), (2, b""))
+        self.assertIn(b"structured stdout write failed", stderr)
 
     def test_real_multi_target_uses_max_severity_when_one_target_is_unauthorized(self) -> None:
         self.write_state(
@@ -854,12 +1172,11 @@ class CodexAdapterTests(unittest.TestCase):
                 self.assertNotIn(prohibited, source)
 
     def test_invalid_commands_and_structured_write_failure_use_exit_two(self) -> None:
-        with mock.patch("sys.stderr", io.StringIO()):
+        with mock.patch("sys.stderr", BinaryOutput()):
             self.assertEqual(codex.main(()), 2)
             self.assertEqual(codex.main(("unknown",)), 2)
-        stdout = mock.Mock()
-        stdout.write.side_effect = OSError("failure")
-        stderr = io.StringIO()
+        stdout = BinaryOutput(fail_binary_writes=None)
+        stderr = BinaryOutput()
         with (
             mock.patch("sys.stdin", io.StringIO(json.dumps(self.session_payload()))),
             mock.patch("sys.stdout", stdout),
@@ -868,7 +1185,7 @@ class CodexAdapterTests(unittest.TestCase):
             code = codex.main(("session-start",))
         self.assertEqual(code, 2)
         self.assertEqual(
-            stderr.getvalue(),
+            stderr.getvalue().decode("utf-8"),
             "evidline codex adapter: structured stdout write failed\n",
         )
 

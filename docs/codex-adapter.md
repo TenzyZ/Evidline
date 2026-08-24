@@ -1,5 +1,10 @@
 # Codex adapter
 
+**V1.0 support status: experimental and deferred.** The implementation and its
+tests remain retained in-tree, but Codex is not production-supported for
+Evidline V1.0 and live Codex production acceptance is post-V1. This status does
+not imply that the implementation is broken or abandoned.
+
 Evidline Phase 6 provides a local, stateless Codex transport over the existing
 context, path, state, and mutation-policy cores. It does not install or activate
 a hook, grant Codex permission, or prove live Codex enforcement.

@@ -179,23 +179,39 @@ def _invoke(
     payload: object,
 ) -> tuple[int, str, str]:
     stdin = io.StringIO(json.dumps(payload))
-    stdout = io.StringIO()
-    stderr = io.StringIO()
+    stdout_bytes = io.BytesIO()
+    stderr_bytes = io.BytesIO()
+    stdout = io.TextIOWrapper(stdout_bytes, encoding="utf-8")
+    stderr = io.TextIOWrapper(stderr_bytes, encoding="utf-8")
     with (
         mock.patch("sys.stdin", stdin),
         mock.patch("sys.stdout", stdout),
         mock.patch("sys.stderr", stderr),
     ):
         code = adapter.main((command,))
-    return code, stdout.getvalue(), stderr.getvalue()
+    stdout.flush()
+    stderr.flush()
+    return (
+        code,
+        stdout_bytes.getvalue().decode("utf-8"),
+        stderr_bytes.getvalue().decode("utf-8"),
+    )
 
 
 def _invoke_argv(adapter: Any, argv: tuple[str, ...]) -> tuple[int, str, str]:
-    stdout = io.StringIO()
-    stderr = io.StringIO()
+    stdout_bytes = io.BytesIO()
+    stderr_bytes = io.BytesIO()
+    stdout = io.TextIOWrapper(stdout_bytes, encoding="utf-8")
+    stderr = io.TextIOWrapper(stderr_bytes, encoding="utf-8")
     with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
         code = adapter.main(argv)
-    return code, stdout.getvalue(), stderr.getvalue()
+    stdout.flush()
+    stderr.flush()
+    return (
+        code,
+        stdout_bytes.getvalue().decode("utf-8"),
+        stderr_bytes.getvalue().decode("utf-8"),
+    )
 
 
 def _hook_output(stdout: str) -> Mapping[str, Any]:

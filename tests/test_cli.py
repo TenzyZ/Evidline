@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import socket
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -52,6 +53,28 @@ NOTICE = (
 class TTYStringIO(io.StringIO):
     def isatty(self) -> bool:
         return True
+
+
+class BinaryOutput:
+    """Text facade that exposes the exact stdout bytes emitted by the CLI."""
+
+    def __init__(self, *, text_encoding: str = "utf-8", isatty: bool = False) -> None:
+        self.buffer = io.BytesIO()
+        self._text_encoding = text_encoding
+        self._isatty = isatty
+
+    def write(self, text: str) -> int:
+        self.buffer.write(text.encode(self._text_encoding))
+        return len(text)
+
+    def flush(self) -> None:
+        self.buffer.flush()
+
+    def isatty(self) -> bool:
+        return self._isatty
+
+    def getvalue(self) -> bytes:
+        return self.buffer.getvalue()
 
 
 def high_state() -> StateDocument:
@@ -122,9 +145,26 @@ class CliTests(unittest.TestCase):
         stdin_text: str = "",
         interactive: bool = False,
     ) -> tuple[int, str, str]:
+        code, stdout, stderr = self.run_cli_bytes(
+            *args,
+            stdin_text=stdin_text,
+            interactive=interactive,
+        )
+        return code, stdout.decode("utf-8"), stderr.decode("utf-8")
+
+    def run_cli_bytes(
+        self,
+        *args: str,
+        stdin_text: str = "",
+        interactive: bool = False,
+        stdout_encoding: str = "utf-8",
+    ) -> tuple[int, bytes, bytes]:
         stdin = TTYStringIO(stdin_text) if interactive else io.StringIO(stdin_text)
-        stdout = TTYStringIO() if interactive else io.StringIO()
-        stderr = io.StringIO()
+        stdout = BinaryOutput(
+            text_encoding=stdout_encoding,
+            isatty=interactive,
+        )
+        stderr = BinaryOutput()
         code = 0
         with (
             mock.patch("sys.stdin", stdin),
@@ -325,6 +365,139 @@ class CliTests(unittest.TestCase):
         code, stdout, stderr = self.run_cli("context", "--root", str(self.root))
         self.assertEqual(code, 0)
         self.assertIn("EVIDLINE CONTEXT", stdout)
+
+    def test_context_payload_emits_utf8_bytes_under_hostile_text_encoding(self) -> None:
+        self.write_state(high_state())
+
+        code, raw, stderr = self.run_cli_bytes(
+            "context",
+            "--root",
+            str(self.root),
+            "--format",
+            "payload",
+            stdout_encoding="cp1252",
+        )
+
+        self.assertEqual((code, stderr), (0, b""))
+        self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
+        try:
+            decoded = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            self.fail(f"context payload is not strict UTF-8: {exc}")
+        self.assertIn("—", decoded)
+
+    def test_context_payload_subprocess_ignores_hostile_python_encoding(self) -> None:
+        self.write_state(high_state())
+        environment = os.environ.copy()
+        source_root = str(Path(__file__).resolve().parents[1] / "src")
+        existing_pythonpath = environment.get("PYTHONPATH")
+        environment["PYTHONPATH"] = (
+            source_root
+            if not existing_pythonpath
+            else source_root + os.pathsep + existing_pythonpath
+        )
+        environment["PYTHONIOENCODING"] = "cp1252"
+        environment["PYTHONUTF8"] = "0"
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "evidline",
+                "context",
+                "--root",
+                str(self.root),
+                "--format",
+                "payload",
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            env=environment,
+            capture_output=True,
+            text=False,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertFalse(completed.stdout.startswith(b"\xef\xbb\xbf"))
+        self.assertIn(b"\n", completed.stdout)
+        self.assertNotIn(b"\r\n", completed.stdout)
+        try:
+            decoded = completed.stdout.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            self.fail(f"subprocess payload is not strict UTF-8: {exc}")
+        self.assertIn("—", decoded)
+
+    def test_unicode_diagnostic_subprocess_ignores_hostile_python_encoding(self) -> None:
+        self.initialize()
+        environment = os.environ.copy()
+        source_root = str(Path(__file__).resolve().parents[1] / "src")
+        existing_pythonpath = environment.get("PYTHONPATH")
+        environment["PYTHONPATH"] = (
+            source_root
+            if not existing_pythonpath
+            else source_root + os.pathsep + existing_pythonpath
+        )
+        environment["PYTHONIOENCODING"] = "cp1252"
+        environment["PYTHONUTF8"] = "0"
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "evidline",
+                "add-task",
+                "--root",
+                str(self.root),
+                "--id",
+                "task-漢字",
+                "--description",
+                "bounded test",
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            env=environment,
+            capture_output=True,
+            text=False,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 6, completed.stderr)
+        self.assertEqual(completed.stdout, b"")
+        try:
+            decoded = completed.stderr.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            self.fail(f"subprocess diagnostic is not strict UTF-8: {exc}")
+        self.assertIn("task-漢字", decoded)
+        self.assertIn("invalid proposed state", decoded)
+
+    def test_unicode_argparse_error_ignores_hostile_python_encoding(self) -> None:
+        environment = os.environ.copy()
+        source_root = str(Path(__file__).resolve().parents[1] / "src")
+        existing_pythonpath = environment.get("PYTHONPATH")
+        environment["PYTHONPATH"] = (
+            source_root
+            if not existing_pythonpath
+            else source_root + os.pathsep + existing_pythonpath
+        )
+        environment["PYTHONIOENCODING"] = "cp1252"
+        environment["PYTHONUTF8"] = "0"
+
+        completed = subprocess.run(
+            [sys.executable, "-m", "evidline", "context", "--漢字"],
+            cwd=Path(__file__).resolve().parents[1],
+            env=environment,
+            capture_output=True,
+            text=False,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(completed.stdout, b"")
+        try:
+            decoded = completed.stderr.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            self.fail(f"argparse diagnostic is not strict UTF-8: {exc}")
+        self.assertIn("--漢字", decoded)
+        self.assertIn("unrecognized arguments", decoded)
 
     def test_verified_handoff_context_formats_budget_root_and_degradation(self) -> None:
         state_path = self.write_verified_handoff_state()
