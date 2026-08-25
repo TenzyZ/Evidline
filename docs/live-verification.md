@@ -544,6 +544,35 @@ Do not normalize, rewrite, or replace historical failed P7 artifacts to create
 a PASS. Old failed evidence remains historical evidence; a result requires a
 newly authorized capture.
 
+### Future Claude SessionStart correlation
+
+Phase 15A adds an offline prerequisite only; it does not execute or authorize a
+live campaign. In a future separately authorized campaign, the proof path is:
+
+```text
+SessionStart hook input
+-> existing Claude capture wrapper
+-> Evidline SessionStart adapter
+-> exact stdout relay
+-> private correlation record
+-> existing evidence-binding derivation
+```
+
+For one successful `SessionStart`, the private Evidline record binds the digest
+of the incoming session identity, the incoming SessionStart `source`, the
+adapter exit code, and a reversible base64 representation of the exact adapter
+stdout bytes. Existing derivation computes `context_payload_sha256` over those
+exact bytes and `context_payload_length` as their byte length. The wrapper does
+not trim, normalize, decode/re-encode, or otherwise change the relayed payload.
+
+This private Evidline correlation record is not the independent Claude Code
+harness/debug capture required for future review. Both remain necessary: the
+private record binds wrapper input to adapter output, while the independent
+capture establishes what the harness actually dispatched and observed. Keep
+both raw/private materials outside Git under the existing retention rules.
+This procedure makes no claim that a SessionStart campaign has run or that any
+live claim is verified.
+
 ### Retention, rollback, and Git persistence
 
 At rollback, destroy sandbox-resident nonce-bearing state as already required.
