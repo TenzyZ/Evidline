@@ -2,9 +2,11 @@
 
 ```text
 STATUS:
-CLAUDE-ONLY V1 LIVE ACCEPTANCE
+CLAUDE-ONLY V1 LIVE ACCEPTANCE EVIDENCE STATUS
+CLAUDE T2 INSTALLED_HARNESS_DISPATCH VERIFIED
+CLAUDE T2 LIVE_CONTEXT_INJECTION VERIFIED
 CLAUDE T3 LIVE_MUTATION_DENIAL VERIFIED
-SANITIZED REPRESENTATION COMMITTED; RAW CAPTURES RETAINED OUTSIDE GIT
+SANITIZED REPRESENTATIONS RETAINED; RAW CAPTURES RETAINED OUTSIDE GIT
 CODEX FOUR-SESSION CAMPAIGN EXECUTED 2026-08-21
 ON UNCOMMITTED RUNTIME
 S_CONTROL / S_ENABLED / S_POS OBSERVED
@@ -17,17 +19,22 @@ This procedure originated with the Phase 13 contract frozen in
 [ADR-0027](adr/ADR-0027-vab-7-live-verification-contract.md). Its V1 harness
 scope is narrowed by
 [ADR-0029](adr/ADR-0029-claude-first-v1-support-boundary.md) to Claude Code.
-Claude runs 1-3 remain forensic only; the later retained Claude T3 denial chain
-is represented by a sanitized committed artifact while raw captures remain
-outside Git. The historical Codex campaign remains inconclusive and its useful
-forensic procedure is retained below for post-V1 experimental work. Codex live
-production acceptance is not a V1 blocker.
+Claude runs 1-3 remain forensic only. The later independently accepted Claude
+evidence is represented by sanitized repository artifacts for
+[`INSTALLED_HARNESS_DISPATCH`](evidence/phase-13/claude-t2-installed-harness-dispatch.json),
+[`LIVE_CONTEXT_INJECTION`](evidence/phase-13/claude-t2-live-context-injection.json),
+and the previously retained T3 denial chain while raw captures remain outside
+Git. The historical Codex campaign remains inconclusive and its useful forensic
+procedure is retained below for post-V1 experimental work. Codex live production
+acceptance is not a V1 blocker.
 
-Do not treat any section below as evidence that a later harness dispatch,
-injection, or denial has been accepted.
+Do not treat the procedure below by itself as acceptance evidence. Accepted
+claims are limited to the status and sanitized artifacts identified above.
 
 ```text
-CLAUDE-ONLY V1 LIVE ACCEPTANCE
+CLAUDE-ONLY V1 LIVE ACCEPTANCE EVIDENCE STATUS
+CLAUDE T2 INSTALLED_HARNESS_DISPATCH VERIFIED
+CLAUDE T2 LIVE_CONTEXT_INJECTION VERIFIED
 CLAUDE T3 LIVE_MUTATION_DENIAL VERIFIED
 CODEX FOUR-SESSION CAMPAIGN EXECUTED 2026-08-21
 ON UNCOMMITTED RUNTIME
@@ -741,23 +748,35 @@ to the private review location. Keep an unambiguous correspondence
 from each committed field name to the retained file that produced
 it. Do not invent repository filenames for those files.
 
-Current tooling binds file bytes through `tools/phase13` as follows
-(`sha256` of the file bytes, matching `hashlib.sha256(path.read_bytes())`):
+Current tooling uses two digest methods through `tools/phase13`:
+
+- `[bytes]`: SHA-256 of the exact file bytes, matching
+  `hashlib.sha256(path.read_bytes())`.
+- `[text]`: decode the file as UTF-8, strip trailing `\r` / `\n`, then hash
+  the resulting text as UTF-8 via `sha256_text`. `--nonce-file` uses the same
+  text method.
 
 ```text
 INSTALLED_HARNESS_DISPATCH
-  --raw-capture        -> raw_capture_sha256
-  --context-payload    -> context_payload_sha256
+  --raw-capture        -> raw_capture_sha256 [bytes]
+  --context-payload    -> context_payload_sha256 [bytes]
 
 LIVE_CONTEXT_INJECTION
-  --enabled-raw-capture -> enabled_raw_capture_sha256
-  --control-raw-capture -> control_raw_capture_sha256
-  --context-payload     -> context_payload_sha256
-  --nonce-file          -> challenge_nonce_sha256
+  --enabled-raw-capture -> enabled_raw_capture_sha256 [bytes]
+  --control-raw-capture -> control_raw_capture_sha256 [bytes]
+  --enabled-answer-file -> enabled_answer_sha256 [text]
+  --control-answer-file -> control_answer_sha256 [text]
+  --enabled-session-id-file -> enabled_session_sha256 [text]
+  --control-session-id-file -> control_session_sha256 [text]
+  --context-payload     -> context_payload_sha256 [bytes]
+  --nonce-file          -> challenge_nonce_sha256 [text]
+  --private-correlation-record
+    -> adapter_exit_code, context_payload_sha256, context_payload_length;
+       also derives SessionStart session_sha256 before claim-specific filtering
 
 LIVE_MUTATION_DENIAL
-  --raw-capture        -> raw_capture_sha256
-  positive_control_raw_capture_sha256
+  --raw-capture        -> raw_capture_sha256 [bytes]
+  positive_control_raw_capture_sha256 [bytes]
     no CLI flag; retain the exact raw capture bytes whose digest
     was supplied in the evidence input under that field name
 ```
@@ -766,11 +785,17 @@ Reviewer procedure:
 
 1. Confirm each applicable committed digest field has exactly one
    retained capture file in the private review location.
-2. Recompute SHA-256 from those retained bytes using only the Python
-   standard library. Example:
+2. Recompute each digest with the method shown for its binding, using only the
+   Python standard library. Byte-digest example:
 
    ```text
    python -c "import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())" <retained-file>
+   ```
+
+   Text-digest example, matching `_digest_file_text`:
+
+   ```text
+   python -c "import hashlib, pathlib, sys; text=pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').rstrip('\r\n'); print(hashlib.sha256(text.encode('utf-8')).hexdigest())" <retained-file>
    ```
 
 3. Compare `recomputed digest == committed digest` for every applicable

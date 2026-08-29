@@ -1,0 +1,18 @@
+{
+  "adapter_exit_code": 0,
+  "captured_at_utc": "2026-08-25T09:37:15.977Z",
+  "claim": "INSTALLED_HARNESS_DISPATCH",
+  "context_payload_length": 275,
+  "context_payload_sha256": "f07dac699b2e7da998d9405a804b74f47a429d9f38442c11bd80480077e0e5dc",
+  "event_type": "SessionStart",
+  "evidline_commit_sha": "77a93c21ea8ecd1614c0864a76fde11c4ab61ece",
+  "harness_name": "claude",
+  "harness_version": "2.1.243",
+  "live_status": "EXECUTED",
+  "notes": "Private correlation and retained raw/debug/session captures remain outside Git for independent review.",
+  "operator_summary": "Fresh installed-Claude SessionStart dispatch candidate from the bounded Phase 15C campaign.",
+  "raw_capture_sha256": "b7fa59a995ffb7eede77f393eef67103789a9a2289185a8f496aa4c76b60feef",
+  "sandbox_state_sha256": "1f5d63dbd5b5ab143d6624fa70d1c132adf181d98fd8fcda5b7b540dd96f4357",
+  "session_sha256": "62df18d078c0b40d9a563526b229a1168341ba2332c33aea30c39c40fabbcab3",
+  "verdict": "VERIFIED"
+}
