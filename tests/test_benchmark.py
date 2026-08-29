@@ -197,19 +197,21 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(blockers["VAB-4"]["status"], "CLOSED")
         self.assertEqual(blockers["VAB-5"]["status"], "CLOSED")
         self.assertEqual(blockers["VAB-6"]["status"], "CLOSED")
+        self.assertEqual(blockers["VAB-7"]["status"], "CLOSED")
+        self.assertEqual(blockers["VAB-8"]["status"], "UNRESOLVED")
         self.assertGreater(
             len([item for item in blockers.values() if item["status"] != "CLOSED"]),
             0,
         )
         self.assertEqual(self.observed["contract"]["v1_acceptance"], "BLOCKED")
 
-    def test_live_verification_is_not_attempted(self) -> None:
+    def test_live_verification_is_verified_for_claude_only(self) -> None:
         self.assertEqual(
             self.observed["contract"]["live_verification"],
             {
-                "INSTALLED_HARNESS_DISPATCH": "NOT_ATTEMPTED",
-                "LIVE_MUTATION_DENIAL": "NOT_ATTEMPTED",
-                "LIVE_CONTEXT_INJECTION": "NOT_ATTEMPTED",
+                "INSTALLED_HARNESS_DISPATCH": "VERIFIED_CLAUDE_ONLY",
+                "LIVE_MUTATION_DENIAL": "VERIFIED_CLAUDE_ONLY",
+                "LIVE_CONTEXT_INJECTION": "VERIFIED_CLAUDE_ONLY",
             },
         )
 

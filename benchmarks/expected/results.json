@@ -11,9 +11,9 @@
       "NOT_MEASURABLE_V1"
     ],
     "live_verification": {
-      "INSTALLED_HARNESS_DISPATCH": "NOT_ATTEMPTED",
-      "LIVE_CONTEXT_INJECTION": "NOT_ATTEMPTED",
-      "LIVE_MUTATION_DENIAL": "NOT_ATTEMPTED"
+      "INSTALLED_HARNESS_DISPATCH": "VERIFIED_CLAUDE_ONLY",
+      "LIVE_CONTEXT_INJECTION": "VERIFIED_CLAUDE_ONLY",
+      "LIVE_MUTATION_DENIAL": "VERIFIED_CLAUDE_ONLY"
     },
     "metrics": {
       "accounting_exact": true,
@@ -177,8 +177,8 @@
       },
       {
         "id": "VAB-7",
-        "status": "OPEN",
-        "title": "live harness evidence absent; installed dispatch, injection, and denial unattempted"
+        "status": "CLOSED",
+        "title": "Claude-only live harness evidence accepted; installed SessionStart dispatch, live context injection, and selected-path Write mutation denial verified; Codex live acceptance deferred post-V1"
       },
       {
         "id": "VAB-8",
