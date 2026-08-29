@@ -199,6 +199,23 @@ class ClaudeCaptureRecordTests(unittest.TestCase):
         return json.dumps(document, separators=(",", ":")).encode("utf-8")
 
     @staticmethod
+    def session_start_input(
+        *,
+        event: str = "SessionStart",
+        session_id: str = "session-start-private-123",
+        source: str = "startup",
+    ) -> bytes:
+        return json.dumps(
+            {
+                "session_id": session_id,
+                "hook_event_name": event,
+                "source": source,
+                "transcript": "PRIVATE-SESSION-TRANSCRIPT",
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    @staticmethod
     def deny_stdout(label: str) -> bytes:
         return json.dumps(
             {
@@ -266,6 +283,71 @@ class ClaudeCaptureRecordTests(unittest.TestCase):
             "PRIVATE-ENVIRONMENT",
         ):
             self.assertNotIn(private_value.encode(), record_bytes)
+
+    def test_session_start_record_binds_source_digest_exact_stdout_and_exit(self) -> None:
+        record_path = self.root / "session-start-correlation.json"
+        child_stdout = b"context \xff payload\r\n"
+        child_stderr = b"session-start-stderr\n"
+
+        completed = self.run_helper(
+            self.session_start_input(),
+            record=record_path,
+            stdout=child_stdout,
+            stderr=child_stderr,
+        )
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, child_stdout)
+        self.assertEqual(completed.stderr, child_stderr)
+        record_bytes = record_path.read_bytes()
+        record = json.loads(record_bytes)
+        self.assertEqual(
+            set(record),
+            {
+                "adapter_exit_code",
+                "adapter_stdout_base64",
+                "format",
+                "hook_event_name",
+                "session_sha256",
+                "source",
+            },
+        )
+        self.assertEqual(
+            record["format"],
+            "evidline.phase13.claude-sessionstart-correlation.v1",
+        )
+        self.assertEqual(record["hook_event_name"], "SessionStart")
+        self.assertEqual(record["source"], "startup")
+        self.assertEqual(
+            record["session_sha256"],
+            hashlib.sha256(b"session-start-private-123").hexdigest(),
+        )
+        self.assertEqual(base64.b64decode(record["adapter_stdout_base64"]), child_stdout)
+        self.assertEqual(record["adapter_exit_code"], 0)
+        self.assertNotIn(b"session-start-private-123", record_bytes)
+        self.assertNotIn(b"PRIVATE-SESSION-TRANSCRIPT", record_bytes)
+
+    def test_unrelated_event_does_not_consume_session_start_record(self) -> None:
+        record_path = self.root / "session-start-correlation.json"
+        child_stdout = b"session context"
+
+        unrelated = self.run_helper(
+            self.session_start_input(event="PostCompact"),
+            record=record_path,
+            stdout=child_stdout,
+        )
+
+        self.assertEqual(unrelated.returncode, 0)
+        self.assertEqual(unrelated.stdout, child_stdout)
+        self.assertFalse(record_path.exists())
+
+        session_start = self.run_helper(
+            self.session_start_input(),
+            record=record_path,
+            stdout=child_stdout,
+        )
+        self.assertEqual(session_start.returncode, 0)
+        self.assertTrue(record_path.is_file())
 
     def test_two_invocations_cannot_cross_bind(self) -> None:
         paths = (self.root / "one.json", self.root / "two.json")
@@ -700,6 +782,29 @@ class ClaudeCaptureRecordTests(unittest.TestCase):
         self.assertEqual(relayed_stdout, child_stdout)
         self.assertFalse(record_path.exists())
 
+    def test_session_start_failure_cannot_create_proof_eligible_record(self) -> None:
+        nonzero_path = self.root / "session-start-nonzero.json"
+        completed = self.run_helper(
+            self.session_start_input(),
+            record=nonzero_path,
+            stdout=b"failed session context",
+            exit_code=2,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertFalse(nonzero_path.exists())
+
+        relay_path = self.root / "session-start-relay.json"
+        returncode, relayed_stderr = self.run_helper_closed_stream(
+            self.session_start_input(),
+            record=relay_path,
+            stdout=b"unrelayed session context",
+            stderr=b"adapter-stderr-relayed",
+            closed="stdout",
+        )
+        self.assertIn(returncode, {0, 120})
+        self.assertTrue(relayed_stderr.startswith(b"adapter-stderr-relayed"))
+        self.assertFalse(relay_path.exists())
+
 
 # Byte-exact permissionDecisionReason of the real adapter for the accepted
 # offline fixture (reproduced from evidline.adapters.claude pre-tool-use).
@@ -854,6 +959,54 @@ class ClaudeCaptureVerifierTests(ClaudeCaptureRecordTests):
             ["permissionDecision"],
             "deny",
         )
+
+    def test_session_start_record_derives_payload_bindings_and_rejects_mismatch(self) -> None:
+        record_path = self.root / "session-start-correlation.json"
+        adapter_stdout = b"SessionStart context \xe2\x98\x83\r\n"
+        helper = self.run_helper(
+            self.session_start_input(),
+            record=record_path,
+            stdout=adapter_stdout,
+        )
+        self.assertEqual(helper.returncode, 0)
+
+        evidence_input = {
+            "claim": "INSTALLED_HARNESS_DISPATCH",
+            "harness_name": "claude",
+            "harness_version": "2.1.234",
+            "evidline_commit_sha": "0" * 40,
+            "event_type": "SessionStart",
+            "verdict": "VERIFIED",
+            "live_status": "EXECUTED",
+            "sandbox_state_sha256": "1" * 64,
+            "raw_capture_sha256": "2" * 64,
+        }
+        completed = self.run_evidence(evidence_input, record_path)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode())
+        evidence = json.loads(completed.stdout)
+        self.assertEqual(
+            evidence["session_sha256"],
+            hashlib.sha256(b"session-start-private-123").hexdigest(),
+        )
+        self.assertEqual(evidence["adapter_exit_code"], 0)
+        self.assertEqual(
+            evidence["context_payload_sha256"],
+            hashlib.sha256(adapter_stdout).hexdigest(),
+        )
+        self.assertEqual(evidence["context_payload_length"], len(adapter_stdout))
+
+        for field, value in (
+            ("session_sha256", "3" * 64),
+            ("context_payload_sha256", "4" * 64),
+            ("context_payload_length", len(adapter_stdout) + 1),
+        ):
+            with self.subTest(field=field):
+                mismatch = self.run_evidence(
+                    {**evidence_input, field: value}, record_path
+                )
+                self.assertNotEqual(mismatch.returncode, 0)
+                self.assertIn(b"phase13:", mismatch.stderr)
 
     def test_evidence_command_rejects_all_binding_mismatches(self) -> None:
         record_path = self.make_record()

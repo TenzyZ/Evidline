@@ -1,4 +1,4 @@
-"""Transparent Claude PreToolUse transport with optional private observation."""
+"""Transparent Claude hook transport with optional private observation."""
 
 from __future__ import annotations
 
@@ -24,8 +24,8 @@ else:
 
 
 _EXIT_NO_ADAPTER_RESULT: Final = 1
-_RECORD_FORMAT: Final = "evidline.phase13.claude-pretool-correlation.v1"
-_RECORD_FIELDS: Final = frozenset(
+_PRETOOL_RECORD_FORMAT: Final = "evidline.phase13.claude-pretool-correlation.v1"
+_PRETOOL_RECORD_FIELDS: Final = frozenset(
     {
         "adapter_exit_code",
         "adapter_stdout_base64",
@@ -34,6 +34,19 @@ _RECORD_FIELDS: Final = frozenset(
         "session_sha256",
         "tool_name",
         "tool_use_sha256",
+    }
+)
+_SESSIONSTART_RECORD_FORMAT: Final = (
+    "evidline.phase13.claude-sessionstart-correlation.v1"
+)
+_SESSIONSTART_RECORD_FIELDS: Final = frozenset(
+    {
+        "adapter_exit_code",
+        "adapter_stdout_base64",
+        "format",
+        "hook_event_name",
+        "session_sha256",
+        "source",
     }
 )
 _DECISION_FIELDS: Final = frozenset(
@@ -114,27 +127,50 @@ def _attempt_private_record(
     if not isinstance(payload, Mapping):
         return
     session_id = payload.get("session_id")
-    tool_use_id = payload.get("tool_use_id")
     hook_event_name = payload.get("hook_event_name")
-    tool_name = payload.get("tool_name")
     if not all(
         isinstance(value, str) and value
-        for value in (session_id, tool_use_id, hook_event_name, tool_name)
+        for value in (session_id, hook_event_name)
     ):
         return
-    if hook_event_name != "PreToolUse":
+    if hook_event_name == "SessionStart":
+        source = payload.get("source")
+        if (
+            not isinstance(source, str)
+            or not source
+            or adapter_exit_code != 0
+            or not adapter_stdout
+        ):
+            return
+        record = {
+            "adapter_exit_code": adapter_exit_code,
+            "adapter_stdout_base64": base64.b64encode(adapter_stdout).decode("ascii"),
+            "format": _SESSIONSTART_RECORD_FORMAT,
+            "hook_event_name": hook_event_name,
+            "session_sha256": _sha256_text(session_id),
+            "source": source,
+        }
+    elif hook_event_name == "PreToolUse":
+        tool_use_id = payload.get("tool_use_id")
+        tool_name = payload.get("tool_name")
+        if not all(
+            isinstance(value, str) and value
+            for value in (tool_use_id, tool_name)
+        ):
+            return
+        if not _is_governed_probe_write(payload):
+            return
+        record = {
+            "adapter_exit_code": adapter_exit_code,
+            "adapter_stdout_base64": base64.b64encode(adapter_stdout).decode("ascii"),
+            "format": _PRETOOL_RECORD_FORMAT,
+            "hook_event_name": hook_event_name,
+            "session_sha256": _sha256_text(session_id),
+            "tool_name": tool_name,
+            "tool_use_sha256": _sha256_text(tool_use_id),
+        }
+    else:
         return
-    if not _is_governed_probe_write(payload):
-        return
-    record = {
-        "adapter_exit_code": adapter_exit_code,
-        "adapter_stdout_base64": base64.b64encode(adapter_stdout).decode("ascii"),
-        "format": _RECORD_FORMAT,
-        "hook_event_name": hook_event_name,
-        "session_sha256": _sha256_text(session_id),
-        "tool_name": tool_name,
-        "tool_use_sha256": _sha256_text(tool_use_id),
-    }
     rendered = (
         json.dumps(record, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
         + "\n"
@@ -202,20 +238,19 @@ def derive_evidence_bindings(
     """Derive existing Phase 13 evidence fields from one private record."""
 
     record = _load_json_strict(path.read_text(encoding="ascii"))
-    if (
-        not isinstance(record, Mapping)
-        or set(record) != _RECORD_FIELDS
-        or record.get("format") != _RECORD_FORMAT
-    ):
+    if not isinstance(record, Mapping):
         raise ValueError("invalid private correlation record")
-    if not _is_sha256(record.get("session_sha256")) or not _is_sha256(
-        record.get("tool_use_sha256")
-    ):
+    record_format = record.get("format")
+    if record_format == _PRETOOL_RECORD_FORMAT:
+        required_fields = _PRETOOL_RECORD_FIELDS
+    elif record_format == _SESSIONSTART_RECORD_FORMAT:
+        required_fields = _SESSIONSTART_RECORD_FIELDS
+    else:
+        raise ValueError("invalid private correlation record")
+    if set(record) != required_fields:
+        raise ValueError("invalid private correlation record")
+    if not _is_sha256(record.get("session_sha256")):
         raise ValueError("invalid private correlation digest")
-    if record.get("hook_event_name") != "PreToolUse":
-        raise ValueError("private correlation event must be PreToolUse")
-    if not isinstance(record.get("tool_name"), str) or not record["tool_name"]:
-        raise ValueError("private correlation tool_name must be non-empty")
     exit_code = record.get("adapter_exit_code")
     if isinstance(exit_code, bool) or not isinstance(exit_code, int):
         raise ValueError("private correlation adapter_exit_code must be an integer")
@@ -223,6 +258,35 @@ def derive_evidence_bindings(
     if not isinstance(encoded_stdout, str):
         raise ValueError("private correlation adapter stdout must be base64 text")
     adapter_stdout = base64.b64decode(record["adapter_stdout_base64"], validate=True)
+    if record_format == _SESSIONSTART_RECORD_FORMAT:
+        if record.get("hook_event_name") != "SessionStart":
+            raise ValueError("private correlation event must be SessionStart")
+        if not isinstance(record.get("source"), str) or not record["source"]:
+            raise ValueError("private correlation source must be non-empty")
+        if exit_code != 0 or not adapter_stdout:
+            raise ValueError("SessionStart correlation requires successful payload output")
+        bindings = {
+            "adapter_exit_code": exit_code,
+            "context_payload_length": len(adapter_stdout),
+            "context_payload_sha256": hashlib.sha256(adapter_stdout).hexdigest(),
+            "session_sha256": record["session_sha256"],
+        }
+        source = expected or {}
+        comparisons = {
+            **bindings,
+            "event_type": record["hook_event_name"],
+        }
+        for field, derived in comparisons.items():
+            if field in source and source.get(field) != derived:
+                raise ValueError(f"private correlation {field} mismatch")
+        return bindings
+
+    if not _is_sha256(record.get("tool_use_sha256")):
+        raise ValueError("invalid private correlation digest")
+    if record.get("hook_event_name") != "PreToolUse":
+        raise ValueError("private correlation event must be PreToolUse")
+    if not isinstance(record.get("tool_name"), str) or not record["tool_name"]:
+        raise ValueError("private correlation tool_name must be non-empty")
     bindings: dict[str, object] = {
         "adapter_exit_code": exit_code,
         "session_sha256": record["session_sha256"],
