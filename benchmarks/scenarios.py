@@ -168,8 +168,8 @@ V1_ACCEPTANCE_BLOCKERS: Final = (
     },
     {
         "id": "VAB-7",
-        "title": "live harness evidence absent; installed dispatch, injection, and denial unattempted",
-        "status": "OPEN",
+        "title": "Claude-only live harness evidence accepted; installed SessionStart dispatch, live context injection, and selected-path Write mutation denial verified; Codex live acceptance deferred post-V1",
+        "status": "CLOSED",
     },
     {
         "id": "VAB-8",
@@ -180,9 +180,9 @@ V1_ACCEPTANCE_BLOCKERS: Final = (
 
 LIVE_VERIFICATION: Final = MappingProxyType(
     {
-        "INSTALLED_HARNESS_DISPATCH": "NOT_ATTEMPTED",
-        "LIVE_MUTATION_DENIAL": "NOT_ATTEMPTED",
-        "LIVE_CONTEXT_INJECTION": "NOT_ATTEMPTED",
+        "INSTALLED_HARNESS_DISPATCH": "VERIFIED_CLAUDE_ONLY",
+        "LIVE_MUTATION_DENIAL": "VERIFIED_CLAUDE_ONLY",
+        "LIVE_CONTEXT_INJECTION": "VERIFIED_CLAUDE_ONLY",
     }
 )
 

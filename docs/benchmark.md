@@ -47,9 +47,9 @@ Open V1 blockers do not make a correctly executed benchmark fail.
 Live verification is always explicit:
 
 ```text
-INSTALLED_HARNESS_DISPATCH = NOT_ATTEMPTED
-LIVE_MUTATION_DENIAL       = NOT_ATTEMPTED
-LIVE_CONTEXT_INJECTION     = NOT_ATTEMPTED
+INSTALLED_HARNESS_DISPATCH = VERIFIED_CLAUDE_ONLY
+LIVE_MUTATION_DENIAL       = VERIFIED_CLAUDE_ONLY
+LIVE_CONTEXT_INJECTION     = VERIFIED_CLAUDE_ONLY
 ```
 
 ## Phase 9B verifier coverage
@@ -136,8 +136,10 @@ and the accepted Phase 12 merge completed.
 Doctor scenarios prove deterministic local diagnostic behavior, the nine-check
 result contract, expected broken-state decomposition, read-only/no-write
 behavior, deterministic rendering, and that optional absence is not corruption.
-They do not perform Evidence verification or any VAB-7 live harness behavior;
-installed dispatch, injection, and denial remain unattempted. overall `v1_acceptance` remains `BLOCKED`. This VAB-5 acceptance-ledger
+They do not perform Evidence verification or any live Claude behavior. The
+benchmark contract records the separately accepted Claude-only installed
+dispatch, injection, and denial evidence. Overall `v1_acceptance` remains
+`BLOCKED`. This VAB-5 acceptance-ledger
 closure completes the previously deferred ledger correction. The current frozen synthetic benchmark matches
 `95/95` scenarios.
 
@@ -146,8 +148,9 @@ Closure is based on supported Task and Invariant authoring, governed_scope
 authoring, tests, the 74/74 synthetic benchmark, independent review, and the
 accepted merge. Authored Tasks remain untrusted until the existing approval ceremony.
 
-`VAB-7` — **live harness evidence absent; installed dispatch, injection, and
-denial unattempted** — is `OPEN`.
+`VAB-7` — **Claude-only live harness evidence accepted; installed SessionStart dispatch, live context injection, and selected-path Write mutation denial verified; Codex live acceptance deferred post-V1** — is `CLOSED` based on the accepted sanitized evidence recorded in [ADR-0030](adr/ADR-0030-vab-7-closure.md).
+
+VAB-1 through VAB-7 are `CLOSED`.
 
 `VAB-8` — **V1 demo acceptance contract undefined** — is `UNRESOLVED`. The item
 is within accepted V1 scope, but its exact acceptance contract has not yet been
