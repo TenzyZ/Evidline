@@ -173,8 +173,8 @@ V1_ACCEPTANCE_BLOCKERS: Final = (
     },
     {
         "id": "VAB-8",
-        "title": "V1 demo acceptance contract undefined",
-        "status": "UNRESOLVED",
+        "title": "external developer clean-machine Claude integration journey",
+        "status": "OPEN",
     },
 )
 

@@ -1,0 +1,31 @@
+{
+  "description": "Run Evidline at Claude Code SessionStart and before covered file mutations.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "evidline-claude-hook",
+            "args": ["session-start"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "evidline-claude-hook",
+            "args": ["pre-tool-use"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

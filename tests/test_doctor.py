@@ -21,18 +21,56 @@ class DoctorTests(unittest.TestCase):
             self.root,
             project=state.Project("project", "Doctor tests", (), 8000),
         )
+        which = mock.patch(
+            "evidline.doctor.shutil.which",
+            return_value=str(self.root / "evidline-claude-hook.exe"),
+        )
+        which.start()
+        self.addCleanup(which.stop)
 
-    def test_healthy_project_has_all_nine_passing_checks(self) -> None:
+    def test_healthy_project_has_all_ten_passing_checks(self) -> None:
         report = doctor.run_diagnostics(self.root)
         self.assertEqual(report.overall_status, doctor.OverallStatus.HEALTHY)
-        self.assertEqual([item.id for item in report.checks], [f"D00{item}" for item in range(1, 10)])
+        self.assertEqual(
+            [item.id for item in report.checks],
+            [f"D{item:03d}" for item in range(1, 11)],
+        )
         self.assertTrue(all(item.status is doctor.CheckStatus.PASS for item in report.checks))
+
+    def test_claude_hook_invocable_pass_is_diagnostic_only(self) -> None:
+        report = doctor.run_diagnostics(self.root)
+        check = report.checks[9]
+        self.assertEqual(
+            (check.id, check.label, check.status, check.reason),
+            (
+                "D010",
+                "integration.claude_hook_invocable",
+                doctor.CheckStatus.PASS,
+                doctor.DoctorReason.CHECK_PASSED,
+            ),
+        )
+        self.assertIn("current process environment", check.message)
+        self.assertIn("does not prove", check.message)
+
+    def test_missing_claude_hook_warns_without_becoming_unhealthy(self) -> None:
+        with mock.patch("evidline.doctor.shutil.which", return_value=None):
+            report = doctor.run_diagnostics(self.root)
+        check = report.checks[9]
+        self.assertEqual(check.status, doctor.CheckStatus.WARN)
+        self.assertEqual(
+            check.reason,
+            doctor.DoctorReason.CLAUDE_HOOK_NOT_RESOLVABLE,
+        )
+        self.assertEqual(report.overall_status, doctor.OverallStatus.DEGRADED)
+        self.assertNotEqual(report.overall_status, doctor.OverallStatus.UNHEALTHY)
+        self.assertIn("current process environment", check.message)
 
     def test_uninitialized_root_has_complete_report(self) -> None:
         report = doctor.run_diagnostics(Path(self.temporary.name) / "missing")
         self.assertEqual(report.overall_status, doctor.OverallStatus.UNHEALTHY)
         self.assertEqual(report.checks[1].reason, doctor.DoctorReason.PROJECT_ROOT_NOT_FOUND)
-        self.assertTrue(all(item.reason is doctor.DoctorReason.NOT_REACHED for item in report.checks[2:]))
+        self.assertTrue(all(item.reason is doctor.DoctorReason.NOT_REACHED for item in report.checks[2:9]))
+        self.assertEqual(report.checks[9].status, doctor.CheckStatus.PASS)
 
     def test_exception_mapping_and_single_load(self) -> None:
         cases = (
@@ -49,7 +87,8 @@ class DoctorTests(unittest.TestCase):
                 self.assertEqual(load.call_count, 1)
                 self.assertEqual(report.checks[failed].reason, reason)
                 self.assertTrue(all(report.checks[index].status is doctor.CheckStatus.PASS for index in passing))
-                self.assertTrue(all(item.status is doctor.CheckStatus.SKIP for item in report.checks[failed + 1:]))
+                self.assertTrue(all(item.status is doctor.CheckStatus.SKIP for item in report.checks[failed + 1:9]))
+                self.assertEqual(report.checks[9].status, doctor.CheckStatus.PASS)
         with mock.patch("evidline.doctor._state.load_state", side_effect=state.StateValidationError("structure")):
             report = doctor.run_diagnostics(self.root)
         self.assertEqual(report.checks[6].status, doctor.CheckStatus.SKIP)
@@ -78,7 +117,10 @@ class DoctorTests(unittest.TestCase):
         after = (self.root / ".evidline" / "state.json").read_bytes()
         self.assertEqual(before, after)
         self.assertEqual(report.overall_status, doctor.OverallStatus.DEGRADED)
-        self.assertEqual(report.checks[-1].reason, doctor.DoctorReason.BUDGET_BELOW_PROFILE_MINIMUM)
+        self.assertEqual(
+            report.checks[8].reason,
+            doctor.DoctorReason.BUDGET_BELOW_PROFILE_MINIMUM,
+        )
         first_json = doctor.render_doctor_json(report)
         self.assertEqual(first_json, doctor.render_doctor_json(report))
         self.assertEqual(json.loads(first_json)["checks"][0]["id"], "D001")

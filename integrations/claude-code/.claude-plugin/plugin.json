@@ -1,0 +1,8 @@
+{
+  "name": "evidline",
+  "version": "0.0.0",
+  "description": "Verified project context and bounded mutation decisions for Claude Code.",
+  "author": {
+    "name": "Tenzy Lama"
+  }
+}

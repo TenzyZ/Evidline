@@ -1,0 +1,15 @@
+{
+  "name": "evidline",
+  "description": "Repository-local Evidline integration for Claude Code.",
+  "owner": {
+    "name": "Tenzy Lama"
+  },
+  "plugins": [
+    {
+      "name": "evidline",
+      "version": "0.0.0",
+      "description": "Verified project context and bounded mutation decisions for Claude Code.",
+      "source": "./integrations/claude-code"
+    }
+  ]
+}
