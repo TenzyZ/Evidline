@@ -1,9 +1,10 @@
 # Claude Code adapter
 
-Evidline Phase 5 provides a local, stateless Claude Code transport over the
+Evidline provides a local, stateless Claude Code transport over the
 existing context, path, state, and mutation-policy cores. It does not install or
-activate a hook, grant Claude permission, or provide complete mutation
-enforcement.
+activate itself, grant Claude permission, or provide complete mutation
+enforcement. The repository includes a declarative plugin; Claude Code owns its
+lifecycle.
 
 ## What Phase 5 guarantees
 
@@ -78,56 +79,27 @@ BLOCK. However, no Evidline decision may reach Claude if:
 
 Phase 5 is not an unconditionally fail-closed security boundary.
 
-## Reference configuration only
+## Packaged plugin
 
-The following is a reference configuration. It is not automatically installed,
-is not active by virtue of Phase 5, and is intended only for a separately
-human-authorized future activation gate.
+The repository-local plugin at `integrations/claude-code/` runs the installed
+`evidline-claude-hook` console executable in exec form with direct argv. It
+carries only the accepted SessionStart and `Edit|Write|NotebookEdit`
+PreToolUse paths and the accepted 10-second timeout. The existing
+`python -m evidline.adapters.claude` transport remains supported.
 
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python",
-            "args": [
-              "-m",
-              "evidline.adapters.claude",
-              "session-start"
-            ],
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Edit|Write|NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python",
-            "args": [
-              "-m",
-              "evidline.adapters.claude",
-              "pre-tool-use"
-            ],
-            "timeout": 10
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+Installed does not mean enabled; enabled does not mean loaded; loaded does not
+mean executed; executed does not mean a decision was returned; and a decision
+does not mean the mutation was actually blocked.
 
-Do not treat this example as authorization to create or modify
-`.claude/settings.json` or `~/.claude/settings.json`. Activation and live mode
-testing require a separate human decision.
+`evidline doctor` D010 reports only whether the hook executable name resolves
+from the current process environment. A PASS does not prove any plugin or live
+hook state. A WARN is a support and security concern: if the surrounding Claude
+hook cannot start the executable, execution may proceed without Evidline
+enforcement.
+
+Use Claude Code's native marketplace and plugin commands to install, inspect,
+enable, disable, and uninstall the plugin. Evidline never writes
+`.claude/settings.json`, `.claude/settings.local.json`, or user settings.
 
 ## Bounded task approval
 

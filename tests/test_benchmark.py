@@ -198,7 +198,7 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(blockers["VAB-5"]["status"], "CLOSED")
         self.assertEqual(blockers["VAB-6"]["status"], "CLOSED")
         self.assertEqual(blockers["VAB-7"]["status"], "CLOSED")
-        self.assertEqual(blockers["VAB-8"]["status"], "UNRESOLVED")
+        self.assertEqual(blockers["VAB-8"]["status"], "OPEN")
         self.assertGreater(
             len([item for item in blockers.values() if item["status"] != "CLOSED"]),
             0,

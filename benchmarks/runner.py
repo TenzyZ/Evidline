@@ -1460,6 +1460,13 @@ def _execute_scenario(fixture: BenchmarkFixture, spec: ScenarioSpec) -> dict[str
         "doctor": _scenario_doctor,
         "cross": _scenario_cross,
     }
+    if spec.category == "doctor":
+        with mock.patch.object(
+            doctor.shutil,
+            "which",
+            return_value="evidline-claude-hook",
+        ):
+            return dispatch[spec.category](fixture, spec.id)
     return dispatch[spec.category](fixture, spec.id)
 
 

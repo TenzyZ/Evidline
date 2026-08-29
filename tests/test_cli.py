@@ -1499,16 +1499,26 @@ class CliTests(unittest.TestCase):
 
     def test_doctor_text_and_json_are_successful_for_healthy_state(self) -> None:
         self.initialize()
-        code, stdout, stderr = self.run_cli("doctor", "--root", str(self.root))
+        with mock.patch(
+            "evidline.doctor.shutil.which",
+            return_value="evidline-claude-hook",
+        ):
+            code, stdout, stderr = self.run_cli("doctor", "--root", str(self.root))
         self.assertEqual(code, 0)
         self.assertIn("Evidline doctor", stdout)
         self.assertIn("D001 runtime.python_supported", stdout)
         self.assertIn("D009 state.context_budget_sufficient", stdout)
+        self.assertIn("D010 integration.claude_hook_invocable", stdout)
         self.assertEqual(stderr, "")
-        code, stdout, stderr = self.run_cli("doctor", "--root", str(self.root), "--format", "json")
+        with mock.patch(
+            "evidline.doctor.shutil.which",
+            return_value="evidline-claude-hook",
+        ):
+            code, stdout, stderr = self.run_cli("doctor", "--root", str(self.root), "--format", "json")
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(stdout)["overall_status"], "HEALTHY")
-        self.assertEqual(len(json.loads(stdout)["checks"]), 9)
+        self.assertEqual(json.loads(stdout)["doctor_schema_version"], 2)
+        self.assertEqual(len(json.loads(stdout)["checks"]), 10)
         self.assertEqual(stderr, "")
 
     def test_doctor_reports_broken_projects_with_exit_twenty(self) -> None:

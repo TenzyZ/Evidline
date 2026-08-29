@@ -7,6 +7,7 @@ from enum import Enum
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 from typing import Final
 
@@ -16,7 +17,7 @@ from evidline import paths as _paths
 from evidline import state as _state
 
 
-DOCTOR_SCHEMA_VERSION: Final = 1
+DOCTOR_SCHEMA_VERSION: Final = 2
 
 
 class CheckStatus(str, Enum):
@@ -44,6 +45,7 @@ class DoctorReason(str, Enum):
     STATE_STRUCTURE_INVALID = "STATE_STRUCTURE_INVALID"
     BUDGET_BELOW_PROFILE_MINIMUM = "BUDGET_BELOW_PROFILE_MINIMUM"
     BUDGET_BELOW_ALL_PROFILES = "BUDGET_BELOW_ALL_PROFILES"
+    CLAUDE_HOOK_NOT_RESOLVABLE = "CLAUDE_HOOK_NOT_RESOLVABLE"
     NOT_REACHED = "NOT_REACHED"
     NOT_APPLICABLE = "NOT_APPLICABLE"
 
@@ -83,6 +85,7 @@ _CHECKS: Final = (
     ("D007", "state.scope_semantics_compatible"),
     ("D008", "state.structure_valid"),
     ("D009", "state.context_budget_sufficient"),
+    ("D010", "integration.claude_hook_invocable"),
 )
 
 
@@ -113,6 +116,23 @@ def _overall(checks: tuple[DoctorCheck, ...]) -> OverallStatus:
     if any(check.status is CheckStatus.WARN for check in checks):
         return OverallStatus.DEGRADED
     return OverallStatus.HEALTHY
+
+
+def _diagnose_claude_hook() -> DoctorCheck:
+    if shutil.which("evidline-claude-hook") is not None:
+        return _check(
+            9,
+            CheckStatus.PASS,
+            DoctorReason.CHECK_PASSED,
+            "hook executable name is resolvable from the current process environment only; this does not prove the Claude plugin is installed, enabled, loaded, executed, or enforcing mutations",
+        )
+    return _check(
+        9,
+        CheckStatus.WARN,
+        DoctorReason.CLAUDE_HOOK_NOT_RESOLVABLE,
+        "hook executable name is not resolvable from the current process environment; no plugin lifecycle or live hook behavior was tested",
+        "install Evidline for the Claude process and ensure its scripts directory is on PATH; a hook that cannot start may proceed without Evidline enforcement",
+    )
 
 
 def _diagnose_loaded_state(document: _state.StateDocument) -> DoctorCheck:
@@ -166,6 +186,7 @@ def run_diagnostics(project_root: str | os.PathLike[str] | None = None) -> Docto
     if root is None:
         checks.append(_check(1, CheckStatus.FAIL, DoctorReason.PROJECT_ROOT_NOT_FOUND, "no Evidline project root was discovered", "run evidline init, or pass --root PATH"))
         checks.extend(_skip(index) for index in range(2, 9))
+        checks.append(_diagnose_claude_hook())
         return DoctorReport(tuple(checks), _overall(tuple(checks)), __version__, python_version, host_semantics, _state.SCHEMA_VERSION, search_origin, None, None, None, None)
 
     checks.append(_check(1, CheckStatus.PASS, DoctorReason.CHECK_PASSED, f"project root discovered: {root}"))
@@ -199,6 +220,7 @@ def run_diagnostics(project_root: str | os.PathLike[str] | None = None) -> Docto
     else:
         checks.extend((_check(2, CheckStatus.PASS, DoctorReason.CHECK_PASSED, "state file is present"), _check(3, CheckStatus.PASS, DoctorReason.CHECK_PASSED, "state bytes are readable"), _check(4, CheckStatus.PASS, DoctorReason.CHECK_PASSED, "state JSON is valid"), _check(5, CheckStatus.PASS, DoctorReason.CHECK_PASSED, f"state schema {document.schema_version} is supported"), _check(6, CheckStatus.PASS, DoctorReason.CHECK_PASSED, "state scope semantics are compatible"), _check(7, CheckStatus.PASS, DoctorReason.CHECK_PASSED, "state structure is valid"), _diagnose_loaded_state(document)))
 
+    checks.append(_diagnose_claude_hook())
     return DoctorReport(tuple(checks), _overall(tuple(checks)), __version__, python_version, host_semantics, _state.SCHEMA_VERSION, search_origin, str(root), state_path, document.schema_version if document else None, document.revision if document else None)
 
 

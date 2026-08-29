@@ -103,7 +103,7 @@ Today Evidline refuses to persist `VERIFIED`, because the reproducible verifier 
 | Built | Mutation decision engine | [src/evidline/mutation.py](src/evidline/mutation.py) |
 | Designed | Human controlled authority model | [ADR-0009](docs/adr/ADR-0009-human-controlled-authority.md) |
 | Designed | V1 architecture | [Architecture decisions](docs/adr/) |
-| Built | Claude Code adapter transport | [Claude Code adapter guide](docs/claude-code-adapter.md) |
+| Built | Claude Code adapter transport and declarative plugin | [Claude Code adapter guide](docs/claude-code-adapter.md) |
 | Built (experimental; post-V1 production support) | Codex adapter transport | [Codex adapter guide](docs/codex-adapter.md) |
 | Built | Cross-harness benchmark (synthetic) | [Benchmark](docs/benchmark.md) |
 | Built | Verified handoff (explicit `verified-handoff` context profile) | [ADR-0023](docs/adr/ADR-0023-verified-handoff.md) |
@@ -112,7 +112,38 @@ Today Evidline refuses to persist `VERIFIED`, because the reproducible verifier 
 
 The benchmark is synthetic: it measures the implemented core and the adapter transports, not live hook enforcement, and it currently records both V1 goals below as blocked.
 
-There is no complete product surface yet. Claude hook activation, live enforcement, and any published release are still future work. Codex live production acceptance is post-V1 and does not block V1.0.
+The repository contains the Claude plugin productization surface, but no package or marketplace has been published. Live external-user acceptance remains unverified. Codex live production acceptance is post-V1 and does not block V1.0.
+
+## Install from this checkout and connect Claude Code
+
+Until a release is published, install Evidline from a local repository checkout
+using your normal Python package installer, then initialize and author the
+project state with the existing CLI:
+
+```text
+python -m pip install <path-to-evidline-checkout>
+evidline init
+evidline add-invariant ...
+evidline add-task ...
+evidline approve ...
+```
+
+Add this checkout as a Claude marketplace and install the plugin through
+Claude Code's native lifecycle:
+
+```text
+claude plugin marketplace add <path-to-evidline-checkout>
+claude plugin install evidline@evidline
+claude plugin list
+evidline doctor
+```
+
+Use `claude plugin disable evidline@evidline` to disable it and
+`claude plugin uninstall evidline@evidline` to remove it. These native commands
+own lifecycle and settings changes; Evidline writes no `.claude/**`
+configuration. Doctor D010 proves only that `evidline-claude-hook` resolves in
+the current process environment, not that the plugin is installed, enabled,
+loaded, executed, or enforcing mutations.
 
 A local CLI flow is:
 

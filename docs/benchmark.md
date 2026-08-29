@@ -126,14 +126,14 @@ suite passed; benchmark 86/86 matched; independent review approved; and the
 accepted Phase 11 merge completed.
 
 `VAB-5` — **read-only doctor diagnostics implemented and reviewed; deterministic local project and state health reporting performs no repair and establishes no live harness evidence** — is `CLOSED`.
-Closure is based on supported `evidline doctor`; deterministic D001–D009 diagnostics;
+Closure is based on supported `evidline doctor`; the original deterministic D001–D009 diagnostics;
 read-only/no-repair contract; focused 82 tests passed; full suite 488 passed / 5 skipped;
 benchmark 95/95 matched; independent review approved with 0 CRITICAL / 0 MATERIAL;
 and the accepted Phase 12 merge completed.
 
 ## Phase 12 Doctor coverage
 
-Doctor scenarios prove deterministic local diagnostic behavior, the nine-check
+Doctor scenarios prove deterministic local diagnostic behavior, the ten-check
 result contract, expected broken-state decomposition, read-only/no-write
 behavior, deterministic rendering, and that optional absence is not corruption.
 They do not perform Evidence verification or any live Claude behavior. The
@@ -152,13 +152,16 @@ accepted merge. Authored Tasks remain untrusted until the existing approval cere
 
 VAB-1 through VAB-7 are `CLOSED`.
 
-`VAB-8` — **V1 demo acceptance contract undefined** — is `UNRESOLVED`. The item
-is within accepted V1 scope, but its exact acceptance contract has not yet been
-defined.
+`VAB-8` — **external developer clean-machine Claude integration journey** — is
+`OPEN`. The ratified contract requires an external developer on a clean machine
+to install Evidline and its Claude integration, receive verified compiled
+SessionStart context, observe an out-of-scope mutation BLOCK, complete an
+in-scope approved mutation ALLOW, and remove the integration cleanly. This
+journey has not been executed; `v1_acceptance` remains `BLOCKED`.
 
 VAB-1 through VAB-8 are present acceptance limitations or status, not
-implementation work already underway. Nothing in this section is a commitment to
-future-phase work, and the demo contract is deliberately not defined here.
+implementation work already underway. VAB-8 remains open until its separately
+authorized external-user acceptance proof is reviewed.
 
 ## Coverage boundary
 

@@ -182,8 +182,8 @@
       },
       {
         "id": "VAB-8",
-        "status": "UNRESOLVED",
-        "title": "V1 demo acceptance contract undefined"
+        "status": "OPEN",
+        "title": "external developer clean-machine Claude integration journey"
       }
     ]
   },
